@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import os
+import sys
+import pathlib
 import asyncio
 import subprocess
 
@@ -12,7 +14,7 @@ try:
     subprocess.run(['streamlink', '--version'])
 except FileNotFoundError:
     print('Error: You need to install streamlink to use this recorder')
-    exit(1)
+    sys.exit(1)
 
 
 async def main():
@@ -20,11 +22,11 @@ async def main():
         with open('urls.txt', 'rt') as f:
             urls = [line.strip() for line in f.readlines()]
     except FileNotFoundError:
-        with open('urls.txt', 'wt') as f:
-            urls = []
+        pathlib.Path('urls.txt').touch()
+        urls = []
     if not urls:
         print('Please put live urls in `urls.txt`')
-        exit(1)
+        sys.exit(1)
     rooms = [Room.from_url(url) for url in urls if url]
     for room in rooms:
         room.start()

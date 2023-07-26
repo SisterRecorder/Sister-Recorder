@@ -28,6 +28,7 @@ jobs:
     - name: build-bundle
       run: |
         pyinstaller --onefile main.py
+        move dist\main.exe .
       shell: cmd
     - name: Download streamlink
       run: |
@@ -39,6 +40,6 @@ jobs:
       with:
         name: Sister-Recorder-windows
         path: |
-          dist/main.exe
+          main.exe
           streamlink/
 
