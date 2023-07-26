@@ -31,9 +31,10 @@ jobs:
     #   shell: cmd
     - name: Download streamlink
       run: |
-        wget https://github.com/streamlink/windows-builds/releases/download/6.0.0-1/streamlink-6.0.0-1-py311-x86_64.zip -O streamlink.zip
+        curl -L -o streamlink.zip https://github.com/streamlink/windows-builds/releases/download/6.0.0-1/streamlink-6.0.0-1-py311-x86_64.zip
         7z x streamlink.zip
         dir
+      shell: cmd
     - uses: actions/upload-artifact@v3
       with:
         name: Sister-Recorder-windows
