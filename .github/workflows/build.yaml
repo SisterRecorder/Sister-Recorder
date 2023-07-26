@@ -29,9 +29,9 @@ jobs:
       run: |
         pyinstaller --onefile main.py
       shell: cmd
-    - uses: wei/wget@v1
-      with:
-        args: -O streamlink.zip https://github.com/streamlink/windows-builds/releases/download/6.0.0-1/streamlink-6.0.0-1-py311-x86_64.zip
+    - name: Download streamlink
+      run: |
+        curl https://github.com/streamlink/windows-builds/releases/download/6.0.0-1/streamlink-6.0.0-1-py311-x86_64.zip -o streamlink.zip
     - uses: montudor/action-zip@v1
       with:
         args: unzip -qq streamlink.zip -d streamlink
