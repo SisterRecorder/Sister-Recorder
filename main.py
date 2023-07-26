@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
+import os
 import asyncio
+import subprocess
 
 from rooms import Room
+
+if os.path.exists('streamlink/bin/'):
+    extra_path = f'{os.path.abspath("streamlink/ffmpeg")}{os.pathsep}{os.path.abspath("streamlink/bin")}{os.pathsep}'
+    os.environ['PATH'] = extra_path + os.environ["PATH"]
+try:
+    subprocess.run(['streamlink', '--version'])
+except FileNotFoundError:
+    print('Error: You need to install streamlink to use this recorder')
+    exit(1)
 
 
 async def main():
@@ -20,4 +31,6 @@ async def main():
     while True:
         await asyncio.sleep(1000)
 
-asyncio.run(main())
+
+if __name__ == '__main__':
+    asyncio.run(main())

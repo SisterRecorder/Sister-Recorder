@@ -11,24 +11,24 @@ jobs:
   build_windows:
     runs-on: windows-latest
     steps:
-    # - name: Checkout
-    #   uses: actions/checkout@v3
-    #   with:
-    #     submodules: recursive
-    # - name: Set up Python 3.9
-    #   uses: actions/setup-python@v4
-    #   with:
-    #     python-version: '3.9'
-    # - name: install-dependencies
-    #   run: |
-    #     python -m pip install --upgrade pip
-    #     pip install -r requirements.txt
-    #     pip install pyinstaller
-    #   shell: cmd
-    # - name: build-bundle
-    #   run: |
-    #     pyinstaller --onefile main.py
-    #   shell: cmd
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    - name: install-dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+      shell: cmd
+    - name: build-bundle
+      run: |
+        pyinstaller --onefile main.py
+      shell: cmd
     - name: Download streamlink
       run: |
         curl -L -o streamlink.zip https://github.com/streamlink/windows-builds/releases/download/6.0.0-1/streamlink-6.0.0-1-py311-x86_64.zip
