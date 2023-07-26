@@ -11,7 +11,6 @@ class AttrObj:
 
     def filter(self, func: Callable[[Any, Any], Any]):
         def _filter(iterator):
-            print(iterator, func)
             return AttrObj([v for k, v in iterator if func(k, AttrObj(v))])
         if isinstance(self.__obj, dict):
             return _filter(self.__obj.items)
