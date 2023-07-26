@@ -1,0 +1,35 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+
+jobs:
+  build_windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+      - name: install-dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+        shell: cmd
+      - name: build-bundle
+        run: |
+          pyinstaller --onefile main.py
+        shell: cmd
+      - uses: actions/upload-artifact@v3
+        with:
+          name: Sister-Recorder-windows
+          path: dist/main.exe
