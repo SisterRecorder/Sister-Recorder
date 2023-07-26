@@ -9,7 +9,8 @@ Sister Recorder通过调用外部的streamlink实现录制，因而需要下载�
 
 ## 如何使用
 
-安装依赖软件后，在urls.txt中填入需要监视的直播间链接，每行一条，然后运行main.py
+安装依赖软件后，在urls.txt中填入需要监视的直播间链接，每行一条，然后运行main.py。或直接从[Release](https://github.com/SisterRecorder/Sister-Recorder/releases)下载打包后的软件解压运行。
+
 可使用`SISREC_PROXY_URL`环境变量为API配置正向代理URL
 
 ## Wishlist

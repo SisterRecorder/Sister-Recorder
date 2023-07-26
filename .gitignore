@@ -1,4 +1,10 @@
 __pycache__/
+build/
+dist/
+
+streamlink/
+
+*.spec
 
 *.jsonl
 *.log
