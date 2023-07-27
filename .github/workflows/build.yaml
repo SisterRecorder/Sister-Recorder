@@ -36,6 +36,13 @@ jobs:
         7z x streamlink.zip
         move streamlink-6.0.0-1-py311-x86_64 streamlink
       shell: cmd
+    - name: Tweaking streamlink parameter
+      run: |
+        cd streamlink\pkgs\streamlink\stream
+        curl -L -o sed.exe https://github.com/mbuilov/sed-windows/raw/master/sed-4.9-x86.exe
+        sed.exe "s/SEGMENT_QUEUE_TIMING_THRESHOLD_FACTOR = 2/SEGMENT_QUEUE_TIMING_THRESHOLD_FACTOR = 6/" hls.py > hls_mod.py
+        move /y hls_mod.py hls.py
+      shell: cmd
     - uses: actions/upload-artifact@v3
       with:
         name: Sister-Recorder-windows

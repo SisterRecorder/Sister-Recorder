@@ -9,6 +9,7 @@ streamlink/
 *.jsonl
 *.log
 *.ts
+*.mp4
 
 urls.txt
 config.ini

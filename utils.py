@@ -1,4 +1,9 @@
 from typing import Callable, Any
+import asyncio
+import logging
+import traceback
+
+import aiofile
 
 
 class AttrObj:
@@ -49,3 +54,45 @@ class AttrObj:
     @property
     def value(self):
         return self.__obj
+
+
+async def dump_stdout(proc: asyncio.subprocess.Process, fn: str, mode='ab', timeout=300, cache_line=10):
+    if proc.stdout is None:
+        return
+    try:
+        cache = []
+        async with aiofile.async_open(fn, mode) as afp:
+            while proc.returncode is None:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout)
+                cache.append(line)
+                if len(cache) > cache_line:
+                    await afp.write(b''.join(cache))
+            await afp.write(b''.join(cache))
+            await afp.write(await asyncio.wait_for(proc.stdout.read(), timeout))
+    except asyncio.TimeoutError:
+        pass
+    except Exception:
+        traceback.print_exc()
+
+
+class Logging:
+    def log(self, level, msg, *args, **kwargs):
+        self.logger.log(level, str(msg), *args, **kwargs)
+
+    def debug(self, msg, *args, **kwargs):
+        self.log(logging.DEBUG, msg, *args, **kwargs)
+
+    def info(self, msg, *args, **kwargs):
+        self.log(logging.INFO, msg, *args, **kwargs)
+
+    def warn(self, msg, *args, **kwargs):
+        self.log(logging.WARNING, msg, *args, **kwargs)
+
+    def warning(self, msg, *args, **kwargs):
+        self.log(logging.WARNING, msg, *args, **kwargs)
+
+    def error(self, msg, *args, **kwargs):
+        self.log(logging.ERROR, msg, *args, **kwargs)
+
+    def exception(self, msg, *args, exc_info=True, **kwargs):
+        self.error(msg, *args, exc_info=exc_info, **kwargs)
