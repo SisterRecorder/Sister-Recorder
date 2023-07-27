@@ -41,5 +41,6 @@ jobs:
         name: Sister-Recorder-windows
         path: |
           main.exe
+          config.example.ini
           streamlink/
 

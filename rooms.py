@@ -11,6 +11,7 @@ from aiohttp_socks import ProxyConnector
 
 from blivedm.blivedm import BLiveClient, HandlerInterface
 from utils import AttrObj
+from config import config
 
 
 class DumpHandler(HandlerInterface):
@@ -72,9 +73,9 @@ class Room:
         aiohttp_config = {
             'timeout': aiohttp.ClientTimeout(total=10),
         }
-        proxy_url = os.environ.get('SISREC_PROXY_URL')
-        if proxy_url:
-            aiohttp_config['connector'] = ProxyConnector.from_url(proxy_url)
+
+        if config.api_proxy:
+            aiohttp_config['connector'] = ProxyConnector.from_url(config.api_proxy)
         self._session = aiohttp.ClientSession(**aiohttp_config)
 
         self.playurl_retry_interval = 5
@@ -82,13 +83,17 @@ class Room:
         self._sleep_future = None
         self._playurl_futhre = None
 
-        self.only_if_no_flv = False
-        self.only_fmp4 = False
+    @classmethod
+    def get_room_id(cls, url: str):
+        match = re.search(r'(?:^|https?://live\.bilibili\.com/(?:(?:blanc|h5)/)?)(\d+)', url)
+        if match:
+            return match[1]
 
     @classmethod
     def from_url(cls, url: str):
-        room_id = re.search(r'(?:^|https?://live\.bilibili\.com/(?:(?:blanc|h5)/)?)(\d+)', url)[1]
-        return cls(room_id)
+        room_id = cls.get_room_id(url)
+        if room_id:
+            return cls(room_id)
 
     def start(self):
         self.dm_client.start()
@@ -123,7 +128,7 @@ class Room:
 
     async def record(self, playurl_info: AttrObj):
         streams = playurl_info.playurl.stream
-        if self.only_if_no_flv and streams.filter_one(lambda _, v: v.protocol_name == 'http_stream'):
+        if config.only_if_no_flv and streams.filter_one(lambda _, v: v.protocol_name == 'http_stream'):
             print('skip record because flv is found')
             await self.sleep()
             return
@@ -133,7 +138,7 @@ class Room:
             await asyncio.sleep(self.playurl_retry_interval)
             return
         fmp4_format = hls_formats.format.filter_one(lambda _, v: v.format_name == 'fmp4').codec._first
-        if self.only_fmp4 and not fmp4_format:
+        if config.only_fmp4 and not fmp4_format:
             print('no fMp4 formats found')
             await asyncio.sleep(self.playurl_retry_interval)
             return
@@ -143,14 +148,23 @@ class Room:
         print('will use url', m3u8_url)
 
         outname = f'rec/{self.room_id}-{round(time.time() * 1000)}'
+        os.makedirs('rec', exist_ok=True)
         print(f'starting rec to {outname}')
-        proc = await asyncio.create_subprocess_exec(
-            'streamlink', m3u8_url, 'best',
-            '--loglevel', 'debug',
-            '--logfile', f'{outname}.log',
-            '--stream-segment-threads', '10',
-            '-o', f'{outname}.ts',
-        )
+        if config.record_backend == 'streamlink':
+            proc = await asyncio.create_subprocess_exec(
+                'streamlink', m3u8_url, 'best',
+                '--loglevel', 'debug',
+                '--logfile', f'{outname}.log',
+                '--stream-segment-threads', '10',
+                '-o', f'{outname}.ts',
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                'ffmpeg', '-hide_banner',
+                '-i', m3u8_url,
+                '-c', 'copy',
+                f'{outname}.{config.output_ext}',
+            )
         await proc.wait()
 
     async def sleep(self):

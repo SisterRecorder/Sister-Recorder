@@ -11,3 +11,4 @@ streamlink/
 *.ts
 
 urls.txt
+config.ini
