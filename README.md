@@ -1,6 +1,6 @@
 # Sister-Recorder
 
-Sister Recorder是一个只录制B站HLS直播流的录播软件，可以用作某录播姬暂不支持HLS的当下的备选方案之一
+Sister Recorder是一个只录制B站HLS直播流的录播软件，可以用作当下的备选方案之一
 
 Sister Recorder is an alternative bilibili livestream recorder that aim to record and only record HLS streams.
 
@@ -20,7 +20,7 @@ Release中的压缩包已经打包了必须的依赖。如果使用Release中打
 
 ## Wishlist
 
-Sister Recorder目前是一个简单赶工实现的录播姬，所以很多功能都没有实现，这些是可能在下一步添加和实现的功能：
+Sister Recorder目前是一个简单赶工实现的项目，所以很多功能都没有实现，这些是可能在下一步添加和实现的功能：
 - Cookies支持
 - 简单的WebUI
 - ffmpeg直接录制/录制后自动转封装
