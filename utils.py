@@ -1,9 +1,66 @@
 from typing import Callable, Any
 import asyncio
 import logging
+from http.cookies import SimpleCookie
 import traceback
 
 import aiofile
+import aiohttp
+from aiohttp_socks import ProxyConnector
+
+logger = logging.getLogger(__name__)
+_sessions = {}
+
+
+def get_live_api_session(config):
+    if not _sessions.get('live_api'):
+        aiohttp_config = {
+            'timeout': aiohttp.ClientTimeout(total=10),
+        }
+        if config.api_proxy:
+            try:
+                aiohttp_config['connector'] = ProxyConnector.from_url(config.api_proxy)
+            except ValueError:
+                logger.error('invalid proxy url, ignore api_proxy setting')
+        if config.live_api_cookie_string:
+            aiohttp_config['cookie_jar'] = aiohttp.CookieJar()
+            aiohttp_config['cookie_jar'].update_cookies(parse_cookies_string(
+                config.live_api_cookie_string, '.bilibili.com'))
+        _sessions['live_api'] = aiohttp.ClientSession(**aiohttp_config)
+    return _sessions['live_api']
+
+
+def get_danmaku_session(config):
+    if not _sessions.get('chat_ws'):
+        _sessions['chat_ws'] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+    return _sessions['chat_ws']
+
+
+def parse_cookies_string(cookie_str: str, domain: str):
+    cookies = SimpleCookie()
+    cookies.load(cookie_str)
+    for cookie in cookies.values():
+        cookie['domain'] = cookie['domain'] or domain
+    return cookies
+
+
+async def dump_stdout(proc: asyncio.subprocess.Process, fn: str, mode='ab', timeout=300, cache_line=10):
+    if proc.stdout is None:
+        return
+    try:
+        cache = []
+        async with aiofile.async_open(fn, mode) as afp:
+            while proc.returncode is None:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout)
+                cache.append(line)
+                if len(cache) > cache_line:
+                    await afp.write(b''.join(cache))
+            await afp.write(b''.join(cache))
+            await afp.write(await asyncio.wait_for(proc.stdout.read(), timeout))
+    except asyncio.TimeoutError:
+        pass
+    except Exception:
+        traceback.print_exc()
 
 
 class AttrObj:
@@ -54,25 +111,6 @@ class AttrObj:
     @property
     def value(self):
         return self.__obj
-
-
-async def dump_stdout(proc: asyncio.subprocess.Process, fn: str, mode='ab', timeout=300, cache_line=10):
-    if proc.stdout is None:
-        return
-    try:
-        cache = []
-        async with aiofile.async_open(fn, mode) as afp:
-            while proc.returncode is None:
-                line = await asyncio.wait_for(proc.stdout.readline(), timeout)
-                cache.append(line)
-                if len(cache) > cache_line:
-                    await afp.write(b''.join(cache))
-            await afp.write(b''.join(cache))
-            await afp.write(await asyncio.wait_for(proc.stdout.read(), timeout))
-    except asyncio.TimeoutError:
-        pass
-    except Exception:
-        traceback.print_exc()
 
 
 class Logging:

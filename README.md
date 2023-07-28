@@ -21,8 +21,6 @@ Release中的压缩包已经打包了必须的依赖。如果使用Release中打
 ## Wishlist
 
 Sister Recorder目前是一个简单赶工实现的项目，所以很多功能都没有实现，这些是可能在下一步添加和实现的功能：
-- Cookies支持
 - 简单的WebUI
 - 录制后自动转封装
-- 反代API支持
 - 导出对应场次弹幕

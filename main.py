@@ -53,6 +53,7 @@ async def main():
                         logger.info(f'adding new room {room_id}')
                         rooms[room_id] = Room(room_id)
                         rooms[room_id].start()
+                        await asyncio.sleep(1)
                 await asyncio.sleep(30)
         except Exception:
             logger.exception('error while running main loop')

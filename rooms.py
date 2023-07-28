@@ -5,13 +5,12 @@ import time
 import asyncio
 import traceback
 import logging
+import urllib.parse
 
 from aiofile import async_open
-import aiohttp
-from aiohttp_socks import ProxyConnector
 
 from blivedm.blivedm import BLiveClient, HandlerInterface
-from utils import AttrObj, dump_stdout, Logging
+from utils import get_live_api_session, get_danmaku_session, dump_stdout, AttrObj, Logging
 from config import config
 
 
@@ -74,21 +73,12 @@ class Room(Logging):
         self.logger = logging.getLogger(f'{__name__}.Room][{room_id}')
         self.room_id = int(room_id)
 
-        self.dm_client = BLiveClient(room_id)
+        self.dm_client = BLiveClient(room_id, session=get_danmaku_session(config))
         self.dump_handler = DumpHandler(room_id)
         self.dm_client.add_handler(self.dump_handler)
         self.dm_client.add_handler(LiveStartHandler(self))
 
-        aiohttp_config = {
-            'timeout': aiohttp.ClientTimeout(total=10),
-        }
-
-        if config.api_proxy:
-            try:
-                aiohttp_config['connector'] = ProxyConnector.from_url(config.api_proxy)
-            except ValueError:
-                self.error('invalid proxy url, ignore api_proxy setting')
-        self._session = aiohttp.ClientSession(**aiohttp_config)
+        self._session = get_live_api_session(config)
 
         self.playurl_retry_interval = 5
         self.sleep_interval = 300
@@ -207,7 +197,7 @@ class Room(Logging):
             try:
                 self.info('checking playurl')
                 async with self._session.get(
-                    'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo',
+                    urllib.parse.urljoin(config.live_api_host, '/xlive/web-room/v2/index/getRoomPlayInfo'),
                     params={
                         'room_id': self.room_id,
                         'protocol': '0,1',

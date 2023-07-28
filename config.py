@@ -62,6 +62,9 @@ class Config:
         self.ffmpeg_loglevel = _load_choices('ffmpeg_loglevel', [
             'warning', 'quiet', 'panic', 'fatal', 'error', 'info', 'verbose', 'debug', 'trace'])
         self.api_proxy = _load('api_proxy', validator=lambda i: re.search(r'^(https?|socks\d?)://', i))
+        self.live_api_host = _load('live_api_host', validator=lambda i: re.search(r'^https?://', i)
+                                   ) or 'https://api.live.bilibili.com'
+        self.live_api_cookie_string = _load('live_api_cookie_string')
         self.only_if_no_flv = _load('only_if_no_flv', getter='getboolean')
         self.only_fmp4 = _load('only_fmp4', getter='getboolean')
 
