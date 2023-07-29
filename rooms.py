@@ -12,6 +12,7 @@ from aiofile import async_open
 from blivedm.blivedm import BLiveClient, HandlerInterface
 from utils import get_live_api_session, get_danmaku_session, dump_stdout, AttrObj, Logging
 from config import config
+from hls_playlist_async import HlsDownloader
 
 
 class DumpHandler(HandlerInterface):
@@ -54,7 +55,7 @@ class DumpHandler(HandlerInterface):
             await self.flush_cache()
 
 
-class LiveStartHandler(HandlerInterface):
+class LiveStartHandler(HandlerInterface, Logging):
     def __init__(self, room):
         self.room = room
         self.logger = logging.getLogger(f'{__name__}.LiveStartHandler')
@@ -83,7 +84,7 @@ class Room(Logging):
         self._session = get_live_api_session(config)
 
         self.playurl_retry_interval = 5
-        self.sleep_interval = 300
+        self.sleep_interval = 600
         self._sleep_future = None
         self._playurl_futhre = None
 
@@ -161,35 +162,44 @@ class Room(Logging):
             return
         hls_format = fmp4_format or hls_formats.format._first.codec._first
         self.debug(f'will use format: {hls_format}')
-        m3u8_url = await self.extract_url(hls_format)
-        self.debug(f'will use url {m3u8_url}')
-
-        outname = f'rec/{self.room_id}-{round(time.time() * 1000)}'
-        os.makedirs('rec', exist_ok=True)
-        self.info(f'starting record to {outname} using {config.record_backend}')
-        if config.record_backend == 'streamlink':
-            proc = await asyncio.create_subprocess_exec(
-                'streamlink', m3u8_url, 'best',
-                '--loglevel', 'trace',
-                '--logfile', f'{outname}.log',
-                '--stream-segment-threads', '10',
-                '--hls-live-restart',
-                '-o', f'{outname}.ts',
-                stderr=asyncio.subprocess.DEVNULL,
-            )
+        if config.record_backend == 'native':
+            self.info(f'starting record using {config.record_backend}')
+            try:
+                downloader = HlsDownloader(self.room_id)
+                downloader.load_hls_format(hls_format)
+                await downloader.join()
+            finally:
+                downloader.close()
         else:
-            proc = await asyncio.create_subprocess_exec(
-                'ffmpeg', '-hide_banner', '-nostats',
-                '-loglevel', config.ffmpeg_loglevel,
-                '-i', m3u8_url,
-                '-c', 'copy',
-                f'{outname}.{config.output_ext}',
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            asyncio.ensure_future(dump_stdout(proc, f'{outname}.log'))
-        await proc.wait()
-        self.info(f'record ended with exitcode {proc.returncode}')
+            m3u8_url = await self.extract_url(hls_format)
+            self.debug(f'will use url {m3u8_url}')
+
+            outname = f'rec/{self.room_id}-{round(time.time() * 1000)}'
+            os.makedirs('rec', exist_ok=True)
+            self.info(f'starting record to {outname} using {config.record_backend}')
+            if config.record_backend == 'streamlink':
+                proc = await asyncio.create_subprocess_exec(
+                    'streamlink', m3u8_url, 'best',
+                    '--loglevel', 'trace',
+                    '--logfile', f'{outname}.log',
+                    '--stream-segment-threads', '10',
+                    '--hls-live-restart',
+                    '-o', f'{outname}.ts',
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    'ffmpeg', '-hide_banner', '-nostats',
+                    '-loglevel', config.ffmpeg_loglevel,
+                    '-i', m3u8_url,
+                    '-c', 'copy',
+                    f'{outname}.{config.output_ext}',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                asyncio.ensure_future(dump_stdout(proc, f'{outname}.log'))
+            await proc.wait()
+            self.info(f'record ended with exitcode {proc.returncode}')
 
     async def sleep(self):
         self._sleep_future = asyncio.create_task(asyncio.sleep(self.sleep_interval))
@@ -204,25 +214,27 @@ class Room(Logging):
         finally:
             self._sleep_future = None
 
+    async def _get_playurl(self):
+        self.info('checking playurl')
+        async with self._session.get(
+            urllib.parse.urljoin(config.live_api_host, '/xlive/web-room/v2/index/getRoomPlayInfo'),
+            params={
+                'room_id': self.room_id,
+                'protocol': '0,1',
+                'format': '0,1,2',
+                'codec': '0,1',
+                'qn': 10000,
+                'platform': 'web',
+                'dolby': 5,
+                'panorama': 1,
+            }
+        ) as res:
+            return AttrObj(await res.json())
+
     async def _get_playurl_worker(self):
         while self._running:
             try:
-                self.info('checking playurl')
-                async with self._session.get(
-                    urllib.parse.urljoin(config.live_api_host, '/xlive/web-room/v2/index/getRoomPlayInfo'),
-                    params={
-                        'room_id': self.room_id,
-                        'protocol': '0,1',
-                        'format': '0,1,2',
-                        'codec': '0,1',
-                        'qn': 10000,
-                        'platform': 'web',
-                        'dolby': 5,
-                        'panorama': 1,
-                    }
-                ) as res:
-                    rsp = AttrObj(await res.json())
-
+                rsp = await self._get_playurl()
                 if rsp.data.playurl_info:
                     self.debug('got playurl, starting record')
                     await self.record(rsp.data.playurl_info)

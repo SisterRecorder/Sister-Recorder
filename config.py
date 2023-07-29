@@ -35,14 +35,16 @@ class Config:
         self._load(parser)
 
     def _load(self, parser):
-        def _load(option, transform=lambda i: i, getter='get', validator=lambda i: True):
+        def _load(option, transform=lambda i: i, getter='get', validator=lambda i: True, default=None):
             value = getattr(parser, getter)(section, option, fallback=None)
             if transform and value:
                 value = transform(value)
             if value and not validator(value):
                 self.log(logging.WARNING, f'invalid value for {section}.{option}: {value}')
-            else:
-                return value
+                value = None
+            if value is None and default is not None:
+                return default
+            return value
 
         def _load_choices(option, choices, **kwargs):
             value = _load(option, **kwargs)
@@ -57,7 +59,7 @@ class Config:
         self.loglevel = _load_choices(
             'loglevel', ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], transform=lambda i: i.upper())
         self.logfile = _load('logfile') or f'log/sisrec-{date.today().strftime("%y%m%d")}-.log'
-        self.record_backend = _load_choices('record_backend', ['streamlink', 'ffmpeg'])
+        self.record_backend = _load_choices('record_backend', ['streamlink', 'native', 'ffmpeg'])
         self.output_ext = _load_choices('output_ext', ['ts', 'mp4'])
         self.ffmpeg_loglevel = _load_choices('ffmpeg_loglevel', [
             'warning', 'quiet', 'panic', 'fatal', 'error', 'info', 'verbose', 'debug', 'trace'])
@@ -75,6 +77,7 @@ config.load()
 os.makedirs(os.path.dirname(config.logfile), exist_ok=True)
 logging.basicConfig(
     format='[%(asctime)s][%(levelname)s][%(name)s] %(message)s',
+    datefmt='%y-%m-%d %H:%M:%S',
     level=config.loglevel,
     handlers=[
         logging.StreamHandler(),

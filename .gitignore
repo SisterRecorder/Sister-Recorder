@@ -10,6 +10,8 @@ streamlink/
 *.log
 *.ts
 *.mp4
+*.m4s
+*.m3u8
 
 urls.txt
 config.ini

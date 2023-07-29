@@ -1,4 +1,6 @@
 from typing import Callable, Any
+import re
+import os
 import asyncio
 import logging
 from http.cookies import SimpleCookie
@@ -44,6 +46,29 @@ def parse_cookies_string(cookie_str: str, domain: str):
     return cookies
 
 
+def get_searcher(pattern, flags=0, group=1, transform=None):
+    regex = re.compile(pattern, flags=flags)
+
+    def searcher(s: str, *pos, match_group=None):
+        m = regex.search(s, *pos)
+        if m:
+            value = m.group(match_group or group)
+            if transform:
+                return transform(value)
+            else:
+                return value
+    return searcher
+
+
+async def dump_data(data, fn: str, mode='wb') -> int:
+    try:
+        async with aiofile.async_open(fn, mode) as afp:
+            return await afp.write(data)
+    except FileNotFoundError:
+        os.makedirs(os.path.dirname(fn), exist_ok=True)
+        return await dump_data(data, fn, mode)
+
+
 async def dump_stdout(proc: asyncio.subprocess.Process, fn: str, mode='ab', timeout=300, cache_line=10):
     if proc.stdout is None:
         return
@@ -85,8 +110,12 @@ class AttrObj:
 
     def __getattr__(self, name):
         if isinstance(self.__obj, dict):
-            return AttrObj(self.__obj.get(name))
-        return AttrObj(None)
+            value = self.__obj.get(name)
+        else:
+            value = None
+        if value is None and name.startswith('__') and name.endswith('__'):
+            raise AttributeError
+        return AttrObj(value)
 
     def __getitem__(self, index):
         if isinstance(self.__obj, list):
@@ -95,6 +124,15 @@ class AttrObj:
             except IndexError:
                 return AttrObj(None)
         return AttrObj(None)
+
+    def __iter__(self):
+        if isinstance(self.__obj, list):
+            def _iter():
+                for obj in self.__obj:
+                    yield AttrObj(obj)
+            return _iter()
+        elif isinstance(self.__obj, dict):
+            return iter(self.__obj)
 
     def __str__(self):
         return str(self.__obj)

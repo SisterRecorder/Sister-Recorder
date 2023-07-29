@@ -67,6 +67,7 @@ async def main():
         await asyncio.gather(*[session.close() for session in _sessions.values()])
 
 if __name__ == '__main__':
+    logger.info('starting recorder')
     try:
         asyncio.run(main())
     finally:
