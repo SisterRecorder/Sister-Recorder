@@ -8,6 +8,7 @@ import logging
 
 from config import config
 from rooms import Room
+from utils import _sessions
 
 logger = logging.getLogger(__name__)
 
@@ -33,32 +34,40 @@ except FileNotFoundError:
 
 
 async def main():
-    rooms = {}
+    rooms: dict[str, Room] = {}
     logger.info('start loading rooms')
-    while True:
-        try:
+    try:
+        while True:
             try:
-                with open('urls.txt', 'rt') as f:
-                    urls = [line.strip() for line in f.readlines()]
-            except FileNotFoundError:
-                pathlib.Path('urls.txt').touch()
-                urls = []
-            if not urls:
-                logger.warn('Please put livestream room urls in `urls.txt`')
+                try:
+                    with open('urls.txt', 'rt') as f:
+                        urls = [line.strip() for line in f.readlines()]
+                except FileNotFoundError:
+                    pathlib.Path('urls.txt').touch()
+                    urls = []
+                if not urls:
+                    logger.warn('Please put livestream room urls in `urls.txt`')
+                    await asyncio.sleep(30)
+                else:
+                    for url in urls:
+                        room_id = Room.get_room_id(url)
+                        if room_id and room_id not in rooms:
+                            logger.info(f'adding new room {room_id}')
+                            rooms[room_id] = Room(room_id)
+                            rooms[room_id].start()
+                    await asyncio.sleep(30)
+            except (KeyboardInterrupt, SystemExit):
+                break
+            except Exception:
+                logger.exception('error while running main loop')
                 await asyncio.sleep(30)
-            else:
-                for url in urls:
-                    room_id = Room.get_room_id(url)
-                    if room_id and room_id not in rooms:
-                        logger.info(f'adding new room {room_id}')
-                        rooms[room_id] = Room(room_id)
-                        rooms[room_id].start()
-                        await asyncio.sleep(1)
-                await asyncio.sleep(30)
-        except Exception:
-            logger.exception('error while running main loop')
-            await asyncio.sleep(30)
-
+    finally:
+        logger.info('shutting down')
+        await asyncio.gather(*[room.stop() for room in rooms.values()])
+        await asyncio.gather(*[session.close() for session in _sessions.values()])
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    finally:
+        logging.shutdown()

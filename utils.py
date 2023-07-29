@@ -9,7 +9,7 @@ import aiohttp
 from aiohttp_socks import ProxyConnector
 
 logger = logging.getLogger(__name__)
-_sessions = {}
+_sessions: dict[str, aiohttp.ClientSession] = {}
 
 
 def get_live_api_session(config):

@@ -42,6 +42,8 @@ class DumpHandler(HandlerInterface):
                 to_write = await self._write_queue.get()
                 async with async_open(self.outfile, 'at', encoding='utf-8') as afp:
                     await afp.write(to_write)
+            except asyncio.CancelledError:
+                break
             except Exception:
                 traceback.print_exc()
 
@@ -85,6 +87,8 @@ class Room(Logging):
         self._sleep_future = None
         self._playurl_futhre = None
 
+        self._running = False
+
     @classmethod
     def get_room_id(cls, url: str):
         match = re.search(r'(?:^|https?://live\.bilibili\.com/(?:(?:blanc|h5)/)?)(\d+)', url)
@@ -99,16 +103,21 @@ class Room(Logging):
 
     def start(self):
         self.debug('staring room')
+        self._running = True
         self.dm_client.start()
         self._playurl_future = asyncio.create_task(self._get_playurl_worker())
 
     async def stop(self):
         self.debug('stopping room')
-        self.dm_client.stop()
+        self._running = False
         self._playurl_future.cancel()
-        asyncio.ensure_future(self.dump_handler.stop())
-        await self.dm_client.join()
+        self.debug('closing playurl future')
+        await asyncio.shield(self._playurl_future)
+        self.debug('closing dump handler')
+        await self.dump_handler.stop()
+        self.debug('closing danmaku handler')
         await self.dm_client.stop_and_close()
+        self.debug('room stopped')
 
     def check_live(self):
         try:
@@ -188,12 +197,15 @@ class Room(Logging):
         try:
             await self._sleep_future
         except asyncio.CancelledError:
-            self.debug('sleep interrupted')
+            if self._running:
+                self.debug('sleep interrupted')
+            else:
+                raise
         finally:
             self._sleep_future = None
 
     async def _get_playurl_worker(self):
-        while True:
+        while self._running:
             try:
                 self.info('checking playurl')
                 async with self._session.get(
@@ -218,6 +230,8 @@ class Room(Logging):
                     await asyncio.sleep(self.playurl_retry_interval)
                 else:
                     await self.sleep()
+            except asyncio.CancelledError:
+                break
             except Exception:
                 self.exception('exception in playurl loop')
                 await asyncio.sleep(30)

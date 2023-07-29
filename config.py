@@ -78,7 +78,7 @@ logging.basicConfig(
     level=config.loglevel,
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(config.logfile),
+        logging.FileHandler(config.logfile, encoding='utf-8'),
     ]
 )
 logger = logging.getLogger(__name__)
