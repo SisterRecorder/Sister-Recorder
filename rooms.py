@@ -153,12 +153,12 @@ class Room(Logging):
         hls_formats = streams.filter_one(lambda _, v: v.protocol_name == 'http_hls')
         if not hls_formats:
             self.warn('no hls formats found')
-            await asyncio.sleep(self.playurl_retry_interval)
+            await self.sleep()
             return
         fmp4_format = hls_formats.format.filter_one(lambda _, v: v.format_name == 'fmp4').codec._first
         if config.only_fmp4 and not fmp4_format:
             self.warn('no fMp4 formats found')
-            await asyncio.sleep(self.playurl_retry_interval)
+            await self.sleep()
             return
         hls_format = fmp4_format or hls_formats.format._first.codec._first
         self.debug(f'will use format: {hls_format}')
@@ -170,6 +170,7 @@ class Room(Logging):
                 await downloader.join()
             finally:
                 downloader.close()
+            self.info('record ended')
         else:
             m3u8_url = await self.extract_url(hls_format)
             self.debug(f'will use url {m3u8_url}')

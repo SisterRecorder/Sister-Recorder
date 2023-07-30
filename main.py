@@ -19,18 +19,21 @@ if os.path.exists('streamlink/bin/'):
     extra_path = f'{os.path.abspath("streamlink/ffmpeg")}{os.pathsep}{os.path.abspath("streamlink/bin")}{os.pathsep}'
     os.environ['PATH'] = extra_path + os.environ["PATH"]
 
-try:
-    logger.debug('checking streamlink executable')
-    subprocess.run(['streamlink', '--version'], stdout=subprocess.DEVNULL)
-except FileNotFoundError:
-    logger.error('Error: You need to install streamlink to use this recorder')
-    sys.exit(1)
-try:
-    logger.debug('checking ffmpeg executable')
-    subprocess.run(['ffmpeg', '-version'], stdout=subprocess.DEVNULL)
-except FileNotFoundError:
-    logger.error('Error: You need to install ffmpeg to use this recorder')
-    sys.exit(1)
+if config.record_backend == 'streamlink':
+    try:
+        logger.debug('checking streamlink executable')
+        subprocess.run(['streamlink', '--version'], stdout=subprocess.DEVNULL)
+    except FileNotFoundError:
+        logger.error('Error: You need to install streamlink to use this recorder')
+        sys.exit(1)
+
+if config.record_backend == 'ffmpeg':
+    try:
+        logger.debug('checking ffmpeg executable')
+        subprocess.run(['ffmpeg', '-version'], stdout=subprocess.DEVNULL)
+    except FileNotFoundError:
+        logger.error('Error: You need to install ffmpeg to use this recorder')
+        sys.exit(1)
 
 
 async def main():

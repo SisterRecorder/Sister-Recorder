@@ -13,6 +13,8 @@ from aiohttp_socks import ProxyConnector
 logger = logging.getLogger(__name__)
 _sessions: dict[str, aiohttp.ClientSession] = {}
 
+HLS_CLIENT_TIMEOUT = 5
+
 
 def get_live_api_session(config):
     if not _sessions.get('live_api'):
@@ -36,6 +38,12 @@ def get_danmaku_session(config):
     if not _sessions.get('chat_ws'):
         _sessions['chat_ws'] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
     return _sessions['chat_ws']
+
+
+def get_downloader_session(config):
+    if not _sessions.get('hls-dl'):
+        _sessions['hls-dl'] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HLS_CLIENT_TIMEOUT))
+    return _sessions['hls-dl']
 
 
 def parse_cookies_string(cookie_str: str, domain: str):
@@ -153,7 +161,8 @@ class AttrObj:
 
 class Logging:
     def log(self, level, msg, *args, **kwargs):
-        self.logger.log(level, str(msg), *args, **kwargs)
+        if isinstance(getattr(self, 'logger', None), logging.Logger):
+            self.logger.log(level, str(msg), *args, **kwargs)
 
     def debug(self, msg, *args, **kwargs):
         self.log(logging.DEBUG, msg, *args, **kwargs)

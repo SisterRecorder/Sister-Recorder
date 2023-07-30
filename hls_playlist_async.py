@@ -4,7 +4,7 @@ import asyncio
 import zlib
 import time
 from datetime import date
-from typing import Union
+from typing import Optional, Union
 import logging
 from functools import wraps
 
@@ -12,13 +12,15 @@ import m3u8
 from m3u8.model import InitializationSection, Segment
 import aiohttp
 
-from utils import dump_data, get_searcher, Logging, AttrObj
+from utils import dump_data, get_searcher, get_downloader_session, Logging, AttrObj
+from remuxer import RemuxerInterface, FMp4Remuxer
+from config import config
 
 EXPIRING_THRES = 120
 DURATION_FALLBACK = 1
-CLIENT_TIMEOUT = 5
 STALE_PLAYLIST_TIMEOUT = 30
 TARGET_POOLED_PLAYLIST = 3
+PLAYLIST_MAX_RETRIES = 10
 
 
 _module_formater = logging.Formatter('[%(asctime)s][%(levelname)s][%(name)s] %(message)s', datefmt='%y-%m-%d %H:%M:%S')
@@ -32,6 +34,7 @@ def _get_handlers(logpath):
             _module_handlers[logpath].formatter = _module_formater
             _module_handlers[logpath].setLevel(logging.WARNING)
         else:
+            os.makedirs(os.path.dirname(logpath), exist_ok=True)
             _module_handlers[logpath] = logging.FileHandler(logpath, encoding='utf-8')
             _module_handlers[logpath].formatter = _module_formater
     return _module_handlers[logpath]
@@ -62,7 +65,7 @@ class Playurl:
         self.expire_ts: int = _expire_searcher(self.query)
         self.is_valid: bool = True
         self.full_url = f'{self.host}{self.baseurl}{self.query}'
-        self.require_seq_auth: Union[bool, None] = None
+        self.require_seq_auth: Optional[bool] = None
 
     @classmethod
     def from_playurl(cls, hls_format: AttrObj) -> list["Playurl"]:
@@ -98,19 +101,35 @@ def async_exception_report(func):
     return wrapper
 
 
+def exception_report(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            if isinstance(args[0], Logging):
+                args[0].exception(f'fail to exec func {func}')
+            else:
+                logger.exception(f'fail to exec func {func}')
+            raise
+    return wrapper
+
+
 class HlsDownloader(Logging):
-    def __init__(self, room_id: int, session: Union[aiohttp.ClientSession, None] = None) -> None:
-        if session:
-            self._session = session
-            self._own_session = False
-        else:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=CLIENT_TIMEOUT))
-            self._own_session = True
+    def __init__(self, room_id: int, outdir: str = 'rec',
+                 session: Optional[aiohttp.ClientSession] = None,
+                 remuxer_class: Optional[RemuxerInterface] = FMp4Remuxer) -> None:
+        self._session = session or get_downloader_session(config)
         self.room_id = room_id
+        self.outdir = outdir
+        self.remuxer_class = remuxer_class
+
         self.pools: dict[str, M3u8Pool] = {}
-        self.logger = _get_download_logger(f'HlsDownloader][{room_id}]', logpath=f'rec/sisrec-dl-{room_id}.log')
+        self.remuxers: dict[str, RemuxerInterface] = {}
         self.segments = {}
-        self.init_segments = {}
+
+        self.logger = _get_download_logger(
+            f'HlsDownloader][{room_id}', logpath=os.path.join(outdir, f'sisrec-dl-{room_id}.log'))
 
     def __str__(self) -> str:
         return f'<Downloader {[str(pool) for pool in self.pools.values()]}>'
@@ -130,6 +149,9 @@ class HlsDownloader(Logging):
 
     def adjust_enabled(self):
         self.debug(f'adjusting enables in downloader {self.room_id}')
+        if not self.pools:
+            self.warn('no playlist pool in downloader {self}')
+            return
         if len(self.pools) == 1:
             list(self.pools.values())[0].start()
         else:
@@ -139,7 +161,7 @@ class HlsDownloader(Logging):
         self.debug(f'adjusted downloader: {self}')
 
     @property
-    def best_pool(self) -> "M3u8Pool":
+    def best_pool(self) -> Optional["M3u8Pool"]:
         for pattern in [
             r'live_\d+(?:_bs)?_\d+$',
             r'live_\d+(?:_bs)?_\d+_[A-Za-z]+$',
@@ -150,7 +172,7 @@ class HlsDownloader(Logging):
                     pool = self.valid_or_loading_pool(key)
                     if pool:
                         return pool
-        for key in sorted(self.pools, lambda i: len(i)):
+        for key in sorted(self.pools, key=lambda i: len(i)):
             pool = self.valid_or_loading_pool(key)
             if pool:
                 return pool
@@ -159,17 +181,44 @@ class HlsDownloader(Logging):
         return self.pools[key] if self.pools[key].is_expiring is not True else None
 
     def close(self):
-        if self._own_session:
-            asyncio.ensure_future(self._session.close())
         for pool in self.pools.values():
             pool.close()
+        for remuxer in self.remuxers.values():
+            remuxer.close()
 
     async def join(self):
         await asyncio.gather(*[pool.join() for pool in self.pools.values()])
         self.info('all pools have ended')
+        self.close()
+        await asyncio.gather(*[remuxer.join() for remuxer in self.remuxers.values()])
+        self.info('all remuxers have ended')
+
+    @exception_report
+    def get_remuxer(self, basedir: str):
+        if not self.remuxer_class:
+            return
+        if basedir not in self.remuxers:
+            self.info(f'creating remuxer {self.remuxer_class} for {basedir}')
+            self.remuxers[basedir] = self.remuxer_class(self.outdir, basedir, logger=self.logger)
+        return self.remuxers[basedir]
 
     @async_exception_report
-    async def _download_seg(self, basedir: str, seg: Segment, playurl: Playurl) -> Union[bytes, None]:
+    async def _on_success_seg(self, basedir: str, seg: Segment, seg_fn: str):
+        remuxer = self.get_remuxer(basedir)
+        self.debug(f'adding segment {seg.uri} {seg_fn} to remuxer {remuxer}')
+        if remuxer:
+            await remuxer.add_segment(seg, seg_fn)
+
+    @async_exception_report
+    async def _on_success_init_segs(self, basedir: str, segs: list[tuple[InitializationSection, str]]):
+        remuxer = self.get_remuxer(basedir)
+        self.debug(f'adding init segments to remuxer {remuxer}')
+        if remuxer:
+            await remuxer.add_init_segments(segs)
+
+    @async_exception_report
+    async def _download_seg(self, basedir: str,
+                            seg: Union[Segment, InitializationSection], playurl: Playurl) -> Optional[bytes]:
         if playurl.is_valid is False:
             return
         try:
@@ -208,33 +257,37 @@ class HlsDownloader(Logging):
             self.debug(f'Failed to download fragment from {url}', exc_info=True)
 
     @async_exception_report
-    async def download_seg_and_dump(self, basedir: str, uri: str, seg_urls: dict[str, tuple[Segment, Playurl]], crc32: Union[str, None]):
+    async def download_seg_and_dump(self, basedir: str, uri: str,
+                                    seg_urls: list[tuple[Union[Segment, InitializationSection], Playurl]],
+                                    crc32: Optional[str]):
         results = await asyncio.gather(*[
-            self._download_seg(basedir, seg, playurl) for seg, playurl in seg_urls.values()])
-        for result in results:
+            self._download_seg(basedir, seg, playurl) for seg, playurl in seg_urls])
+        for result, (seg, playurl) in zip(results, seg_urls):
             if result:
                 if crc32 and crc32 != f'{zlib.crc32(result):X}'.lower():
                     self.warning(f'fragment {uri} crc32 checksum failed')
                     continue
                 else:
-                    out_fn = os.path.join('rec', basedir, uri)
+                    out_fn = os.path.join(self.outdir, basedir, uri)
                     await dump_data(result, out_fn)
                     self.debug(f'fragment {uri} downloaded to {out_fn}')
                     self.segments[(basedir, uri)]['file'] = out_fn
+                    if isinstance(seg, Segment):
+                        asyncio.ensure_future(self._on_success_seg(basedir, seg, out_fn))
                     return out_fn
 
     @async_exception_report
     async def download_seg_worker(self, basedir, uri):
         segment_info = self.segments[(basedir, uri)]
         while segment_info['seg_urls'] and not segment_info.get('file'):
-            task = asyncio.create_task(self.download_seg_and_dump(
-                basedir, uri, segment_info['seg_urls'], segment_info.get('crc32')))
+            seg_urls = list(segment_info['seg_urls'].values())
             segment_info['seg_urls'] = {}
-            await task
+            await self.download_seg_and_dump(basedir, uri, seg_urls, segment_info.get('crc32'))
         segment_info['dl_future'] = None
 
     @async_exception_report
-    async def download_seg(self, basedir: str, seg: Segment, crc32: Union[str, None], playurl: Playurl):
+    async def download_seg(self, basedir: str, seg: Union[Segment, InitializationSection],
+                           crc32: Optional[str], playurl: Playurl):
         uri = seg.uri
         if (basedir, uri) not in self.segments:
             self.debug(f'Adding {basedir}/{uri} to tasks')
@@ -257,18 +310,26 @@ class HlsDownloader(Logging):
 
     @async_exception_report
     async def download_init(self, basedir: str, segs: list[InitializationSection], playurl: Playurl):
+        dl_futures = []
         for seg in segs:
-            uri = seg.uri
             await self.download_seg(basedir, seg, None, playurl)
-            self.init_segments[(basedir, uri)] = self.segments[(basedir, uri)]
+            dl_futures.append(self.segments[(basedir, seg.uri)].get('dl_future'))
+        dl_futures = [i for i in dl_futures if i]
+        if dl_futures:
+            await asyncio.gather(*dl_futures)
+        seg_files = [self.segments[(basedir, seg.uri)].get('file') for seg in segs]
+        if all(seg_files):
+            await self._on_success_init_segs(basedir, list(zip(segs, seg_files)))
 
 
 class M3u8Pool(Logging):
     def __init__(self, downloader: HlsDownloader, playurls: list[Playurl] = [], is_enabled=False):
         self.downloader = downloader
+        self.outdir = downloader.outdir
         self._session = downloader._session
         self.room_id = self.downloader.room_id
-        self.logger = _get_download_logger(f'M3u8Pool][{self.room_id}]', logpath=f'rec/sisrec-dl-{self.room_id}.log')
+        self.logger = _get_download_logger(
+            f'M3u8Pool][{self.room_id}', logpath=os.path.join(self.outdir, f'sisrec-dl-{self.room_id}.log'))
 
         self.playlists: dict[str, M3u8Playlist] = {}
         self.basedir = None
@@ -321,7 +382,7 @@ class M3u8Pool(Logging):
         await asyncio.gather(*[playlist.join() for playlist in self.playlists.values()])
         self.info(f'all playlists have ended for pool {self.basedir}')
 
-    def download_init(self, segs: list[Union[InitializationSection, None]], playurl: Playurl):
+    def download_init(self, segs: list[Optional[InitializationSection]], playurl: Playurl):
         if self.is_enabled:
             asyncio.create_task(self.downloader.download_init(
                 self.basedir, [seg for seg in segs if seg], playurl))
@@ -358,9 +419,10 @@ class M3u8Playlist(Logging):
     def __init__(self, pool: M3u8Pool, playurl: Playurl):
         self.pool = pool
         self._session = pool._session
+        self.outdir = pool.outdir
         self.room_id = self.pool.room_id
         self.logger = _get_download_logger(
-            f'M3u8Playlist][{self.room_id}]', logpath=f'rec/sisrec-dl-{self.room_id}.log')
+            f'M3u8Playlist][{self.room_id}', logpath=os.path.join(self.outdir, f'sisrec-dl-{self.room_id}.log'))
 
         self.playurl = playurl
         self.url = playurl.host + playurl.baseurl
@@ -372,6 +434,7 @@ class M3u8Playlist(Logging):
 
         self.last_sequence = -1
         self.last_update = 0
+        self.strike = 0
 
     def __str__(self):
         return f'<Playlist on={self.is_enabled} "{self.brief_url}">'
@@ -401,6 +464,7 @@ class M3u8Playlist(Logging):
     def is_valid(self, value: bool):
         if self._is_valid is None:
             self.debug(f'playlist is loaded {self.brief_url}')
+        self.debug(f'playlist valid status change: {self._is_valid}')
         self._is_valid = value
         self.pool.downloader.adjust_enabled()
 
@@ -431,13 +495,24 @@ class M3u8Playlist(Logging):
                     self.debug(f'reloading playlist {self.brief_url}')
                     async with self._session.get(self.url) as resp:
                         if resp.status >= 400:
+                            self.debug(f'Failed to load playlist, status {resp.status}, {self.brief_url}')
                             self.is_valid = False
                             return
                         await self.parse_rsp(await resp.text())
+                    self.strike = 0
                 except asyncio.CancelledError:
                     break
+                except (asyncio.TimeoutError, aiohttp.ClientOSError):
+                    self.warning(f'playlist loading failed {self.brief_url}')
+                    self.strike += 1
+                    if self.strike > PLAYLIST_MAX_RETRIES:
+                        self.is_valid = False
+                    await asyncio.sleep(3)
                 except Exception:
-                    self.warning('playlist loading failed', exc_info=True)
+                    self.warning(f'playlist loading failed {self.brief_url}', exc_info=True)
+                    self.strike += 1
+                    if self.strike > PLAYLIST_MAX_RETRIES:
+                        self.is_valid = False
                     await asyncio.sleep(3)
             else:
                 await asyncio.sleep(2)
