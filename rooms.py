@@ -147,23 +147,26 @@ class Room(Logging):
         host = hls_format.url_info._first
         return f'{host.host.value}{baseurl}{host.extra.value}'
 
+    def get_flv_stream(self, playurl_info: AttrObj):
+        return playurl_info.playurl.stream.filter_one(lambda _, v: v.protocol_name == 'http_stream').format._first.codec._first
+
+    def get_fmp4_stream(self, playurl_info: AttrObj, fallback=False):
+        hls_formats = playurl_info.playurl.stream.filter_one(lambda _, v: v.protocol_name == 'http_hls').format
+        format = hls_formats.filter_one(lambda _, v: v.format_name == 'fmp4').codec._first
+        if not format and fallback:
+            format = hls_formats._first.codec._first
+        return format
+
     async def record(self, playurl_info: AttrObj):
-        streams = playurl_info.playurl.stream
-        if config.only_if_no_flv and streams.filter_one(lambda _, v: v.protocol_name == 'http_stream'):
+        if config.only_if_no_flv and self.get_flv_stream(playurl_info):
             self.info('skip record because flv is found')
             await self.sleep()
             return
-        hls_formats = streams.filter_one(lambda _, v: v.protocol_name == 'http_hls')
-        if not hls_formats:
-            self.warn('no hls formats found')
+        hls_format = self.get_fmp4_stream(playurl_info, fallback=(not config.only_fmp4))
+        if not hls_format:
+            self.warning(f'no {"fMp4" if config.only_fmp4 else "hls"} formats found')
             await self.sleep()
             return
-        fmp4_format = hls_formats.format.filter_one(lambda _, v: v.format_name == 'fmp4').codec._first
-        if config.only_fmp4 and not fmp4_format:
-            self.warn('no fMp4 formats found')
-            await self.sleep()
-            return
-        hls_format = fmp4_format or hls_formats.format._first.codec._first
         self.debug(f'will use format: {hls_format}')
         if config.record_backend == 'native':
             self.info('sending playurl to native recorder')
@@ -236,10 +239,23 @@ class Room(Logging):
         ) as res:
             return AttrObj(await res.json())
 
+    async def _get_playurl_with_retry(self, prefer_no_bs=True, retries=10):
+        for _ in range(retries):
+            rsp = await self._get_playurl()
+            if not prefer_no_bs:
+                return rsp
+            baseurl = self.get_fmp4_stream(rsp.data.playurl_info).base_url.value
+            if baseurl and '_bs' in baseurl:
+                await asyncio.sleep(1)
+                self.debug('Retry for non-bs playurl')
+            else:
+                return rsp
+        return rsp
+
     async def _get_playurl_worker(self):
         while self._running:
             try:
-                rsp = await self._get_playurl()
+                rsp = await self._get_playurl_with_retry()
                 if rsp.data.playurl_info:
                     self.debug('got playurl, starting record')
                     await self.record(rsp.data.playurl_info)

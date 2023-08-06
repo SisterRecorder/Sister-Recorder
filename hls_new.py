@@ -315,7 +315,7 @@ class HlsDownloader(Logging):
             return init_data + seg_data
 
     @log_exception_async
-    async def download_with_retry(self, media_seq: int, retries=2):
+    async def download_with_retry(self, media_seq: int, retries=3):
         _states = {'success': False, 'start_ts': time.time()}
 
         async def _download_and_save(seg: Segment, playurl: Playurl) -> bool:
@@ -570,6 +570,7 @@ class Playlist(Logging):
         self.debug(f'playlist valid status changed to {value}')
         self._is_valid = value
         if self.pool and not value:
+            self.pool.room.check_live()
             self.pool.check_playlists()
 
     @property
