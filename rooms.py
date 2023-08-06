@@ -83,7 +83,7 @@ class Room(Logging):
         self.dm_client.add_handler(LiveStartHandler(self))
 
         self._session = get_live_api_session(config)
-        self._native_dl_pool = PlaylistPool(self.room_id)
+        self._native_dl_pool = PlaylistPool(self)
 
         self.playurl_retry_interval = 5
         self.sleep_interval = 600
@@ -169,7 +169,7 @@ class Room(Logging):
             self.info('sending playurl to native recorder')
             await self._native_dl_pool.add_from_format(hls_format.value)
             self.debug('playurl sent')
-            await self.sleep()
+            await self.sleep(min_sleep=10)
         else:
             m3u8_url = await self.extract_url(hls_format)
             self.debug(f'will use url {m3u8_url}')
@@ -201,9 +201,10 @@ class Room(Logging):
             await proc.wait()
             self.info(f'record ended with exitcode {proc.returncode}')
 
-    async def sleep(self):
+    async def sleep(self, min_sleep=0):
         self._sleep_future = asyncio.create_task(asyncio.sleep(self.sleep_interval))
         self.debug(f'sleep for {self.sleep_interval}s before getting playurl')
+        start_ts = time.time()
         try:
             await self._sleep_future
         except asyncio.CancelledError:
@@ -213,6 +214,9 @@ class Room(Logging):
                 raise
         finally:
             self._sleep_future = None
+        remaining_sleep = min_sleep - (time.time() - start_ts)
+        if remaining_sleep > 0:
+            await asyncio.sleep(remaining_sleep)
 
     async def _get_playurl(self):
         self.info('checking playurl')

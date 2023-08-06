@@ -6,7 +6,8 @@ import time
 import zlib
 import logging
 import inspect
-from typing import Optional, Union, TypeVar
+import traceback
+from typing import Optional, Union, TypeVar, TYPE_CHECKING
 
 import m3u8
 from m3u8.model import Segment, InitializationSection
@@ -15,6 +16,8 @@ import aiofile
 
 from config import config
 from utils import re_search_group, get_dict_value, get_downloader_session, Logging
+if TYPE_CHECKING:
+    from rooms import Room
 
 
 DOWNLOAD_RETRY_INTERVAL = 3
@@ -133,16 +136,19 @@ class Playurl:
         for host_info in format_data['url_info']:
             if 'mcdn.bilivideo.cn' in host_info['host']:
                 continue
-            group.append(Playurl(
-                host_info['host'], format_data['base_url'], host_info['extra'], group))
+            group.append(Playurl(host_info['host'], format_data['base_url'], host_info['extra'], group))
+            new_baseurl = re.sub(r'(/live_\d+(?:_bs)?_\d+)(?:_\w+)([/\.])', r'\1\2', format_data['base_url'])
+            if new_baseurl != format_data['base_url']:
+                group.append(Playurl(host_info['host'], new_baseurl, '', group))
         return group
 
 
 class PlaylistPool(Logging):
-    def __init__(self, room_id: int, session: Optional[aiohttp.ClientSession] = None):
+    def __init__(self, room: 'Room', session: Optional[aiohttp.ClientSession] = None):
         self._session = session or get_downloader_session(config)
-        self.room_id = room_id
-        self.logger = get_logger('Pool', room_id)
+        self.room = room
+        self.room_id = room.room_id
+        self.logger = get_logger('Pool', self.room_id)
 
         self.playlists: list[Playlist] = []
         self.playlist_groups: list[PlaylistGroup] = []
@@ -182,6 +188,9 @@ class PlaylistPool(Logging):
         if best_group:
             self.info(f'Starting Playlist group {best_group}')
             best_group.start()
+        else:
+            self.info('No available playlist group, requesting new playurl')
+            self.room.check_live()
 
     @log_exception_async
     def add_playlist(self, playlist: 'Playlist'):
@@ -274,8 +283,8 @@ class HlsDownloader(Logging):
                 if seg.crc32 and seg.crc32 != calc_crc32_digest(data):
                     self.error(f'Crc32 checksum failed for segment {seg.uri} from {url}')
             return data
-        except asyncio.TimeoutError:
-            self.warning(f'Failed to donwload segment {seg.uri} from {url}, request timed out')
+        except (asyncio.TimeoutError, aiohttp.ClientError):
+            self.warning(f'Failed to donwload segment {seg.uri} from {url}: {traceback.format_exc(limit=0).strip()}')
         except Exception:
             self.exception(f'Failed to donwload segment {seg.uri} from {url}')
 
@@ -373,8 +382,7 @@ class HlsDownloader(Logging):
                     if not clear_cache:
                         if len(self.segment_data) < CACHE_SEG_WAIT_LIMIT or i > 0:
                             break
-                    else:
-                        self.warning(f'Missing segments ({self.last_segment.media_sequence}, {media_seq - 1}]')
+                    self.warning(f'Missing segments ({self.last_segment.media_sequence}, {media_seq - 1}]')
                 data, seg = self.pop_segment(media_seq)
                 self.debug(f'To write segment {seg.uri}')
                 to_write.append(data)
@@ -632,7 +640,7 @@ class Playlist(Logging):
                     self.is_valid = True
                     self.load_result.set_result(True)
                     return await self.parse_m3u8(await rsp.text(encoding='utf-8'))
-                elif rsp.status == 403 and retry_403:
+                elif rsp.status == 403 and retry_403 and self.playurl.query:
                     self.url = self.playurl.full_url
                     self.expire_ts = self.playurl.expire_ts
                     return await self._load(retry_403=False)
