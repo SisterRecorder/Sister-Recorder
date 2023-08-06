@@ -7,24 +7,26 @@ import zlib
 import logging
 import inspect
 import traceback
-from typing import Optional, Union, TypeVar, TYPE_CHECKING
+import urllib.parse
+import sys
+import signal
+from typing import Optional, Union, TypeVar, Protocol
 
 import m3u8
 from m3u8.model import Segment, InitializationSection
 import aiohttp
 import aiofile
+import httpx
 
 from config import config
-from utils import re_search_group, get_dict_value, get_downloader_session, Logging
-if TYPE_CHECKING:
-    from rooms import Room
+from utils import re_search_group, get_dict_value, get_downloader_session, get_live_api_session, Logging, AttrObj, snapshot_ram_top
 
 
 DOWNLOAD_RETRY_INTERVAL = 3
 BASEDIR = 'rec'
 CACHE_SEG_LIMIT = 10
 CACHE_SEG_WAIT_LIMIT = 20
-DUMMY_WRITE = False
+DUMMY_WRITE = os.environ.get('DUMMY_WRITE', False)
 DEBUG_ALWAYS_EXPIRE_TS = True
 
 T = TypeVar('T')
@@ -108,6 +110,77 @@ def log_exception_async(func: T) -> T:
         return wrapper
 
 
+class RoomInterface(Protocol):
+    @property
+    def room_id(self) -> int:
+        raise NotImplementedError
+
+    def check_live(self):
+        raise NotImplementedError
+
+
+class RoomLinkChecker(Logging):
+    def __init__(self, room_id: int):
+        self.room_id = room_id
+        self._session = get_live_api_session(config)
+        self.logger = get_logger('link_checker', room_id)
+        self.pool: Optional[PlaylistPool] = None
+        self.last_check = 0
+
+    def check_live(self):
+        if time.time() - self.last_check > 10:
+            asyncio.ensure_future(self._check_live())
+
+    async def _check_live(self):
+        if self.pool:
+            for _ in range(10):
+                format = await self._get_format()
+                if not format:
+                    return
+                elif '_bs' in format.base_url.value:
+                    continue
+                break
+            self.last_check = time.time()
+            await self.pool.add_from_format(format.value)
+
+    async def _get_format(self):
+        async with self._session.get(
+            urllib.parse.urljoin(config.live_api_host, '/xlive/web-room/v2/index/getRoomPlayInfo'),
+            params={
+                'room_id': self.room_id,
+                'protocol': '0,1',
+                'format': '0,1,2',
+                'codec': '0,1',
+                'qn': 10000,
+                'platform': 'web',
+                'dolby': 5,
+                'panorama': 1,
+            }, ssl=(config.live_api_host.startswith('https://api.live.bilibili.com'))
+        ) as res:
+            playurl_info = AttrObj(await res.json()).data.playurl_info
+            hls_formats = playurl_info.playurl.stream.filter_one(lambda _, v: v.protocol_name == 'http_hls').format
+            format = hls_formats.filter_one(lambda _, v: v.format_name == 'fmp4').codec._first
+            if not format and not config.only_fmp4:
+                format = hls_formats._first.codec._first
+            return format
+
+
+async def run(room_id):
+    checker = RoomLinkChecker(room_id)
+    pool = PlaylistPool(checker)
+    checker.pool = pool
+    signal.signal(signal.SIGTERM, lambda sig, frame: pool.close())
+    try:
+        await checker._check_live()
+        await pool.join()
+    finally:
+        pool.close()
+
+
+def run_in_asyncio(room_id):
+    asyncio.run(run(room_id))
+
+
 class Playurl:
     def __init__(self, host: str, baseurl: str, query: str, group: list["Playurl"] = []):
         self.host = host
@@ -147,7 +220,7 @@ class Playurl:
 
 
 class PlaylistPool(Logging):
-    def __init__(self, room: 'Room', session: Optional[aiohttp.ClientSession] = None):
+    def __init__(self, room: RoomInterface, session: Optional[httpx.AsyncClient] = None):
         self._session = session or get_downloader_session(config)
         self.room = room
         self.room_id = room.room_id
@@ -156,7 +229,41 @@ class PlaylistPool(Logging):
         self.playlists: list[Playlist] = []
         self.playlist_groups: list[PlaylistGroup] = []
 
+        self._stats_worker = asyncio.ensure_future(self._log_stats_worker())
+
+    async def _log_stats_worker(self):
+        while True:
+            try:
+                self.log_stats()
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                break
+
+    def log_stats(self):
+        self.debug(f'Usage stats\n{self.stats()}\n{snapshot_ram_top(self.logger)}\n')
+
+    def stats(self):
+        stats = {
+            'groups': [],
+            'group_num': len(self.playlist_groups),
+            'cached_segs': 0,
+            'queued_chunks': 0,
+            'cached_inits': 0,
+        }
+        for group in self.playlist_groups:
+            group_stats = group.stats()
+            for key, value in group_stats.items():
+                stats[key] = stats.get(key, 0) + value
+            stats['groups'].append(group_stats)
+        return stats
+
+    async def join(self):
+        while self.playlist_groups:
+            for group in self.playlist_groups:
+                await group.join()
+
     def close(self):
+        self._stats_worker.cancel()
         for group in self.playlist_groups:
             group.close()
         for playlist in self.playlists:
@@ -167,7 +274,7 @@ class PlaylistPool(Logging):
             def __get_score():
                 if not group:
                     return -10000
-                m = re.search(r'/live_\d+(_bs)?_\d+(_\w+)?/', group.basedir)
+                m = re.search(r'^live_\d+(_bs)?_\d+(_\w+)?$', group.basedir)
                 if m:
                     bs, quality = m.groups()
                     if not quality:
@@ -243,7 +350,7 @@ class PlaylistPool(Logging):
 
 
 class HlsDownloader(Logging):
-    def __init__(self, session: aiohttp.ClientSession, playlist_group: "PlaylistGroup"):
+    def __init__(self, session: httpx.AsyncClient, playlist_group: "PlaylistGroup"):
         self._session = session
         self.logger = get_logger('HlsDL', playlist_group.pool.room_id)
         self.playlist_group = playlist_group
@@ -262,6 +369,11 @@ class HlsDownloader(Logging):
 
     def close(self):
         self.running = False
+        for future in self._download_futures.values():
+            try:
+                future.close()
+            except Exception:
+                pass
         asyncio.ensure_future(self.check_for_write(clear_cache=True))
 
     @log_exception_async
@@ -273,14 +385,14 @@ class HlsDownloader(Logging):
             url = f'{playurl.host}{seg.base_uri}{seg.uri}'
         try:
             self.debug(f'Downloading segment {seg.uri} from {url}')
-            async with self._session.get(url) as rsp:
-                if rsp.status == 403 and playurl.seg_add_query is None:
+            async with self._session.stream('GET', url) as rsp:
+                if rsp.status_code == 403 and playurl.seg_add_query is None:
                     playurl.seg_add_query = True
                     return await self.download_and_verify(seg, playurl)
-                elif rsp.status == 200:
-                    data = await rsp.read()
+                elif rsp.status_code == 200:
+                    data = await rsp.aread()
                 else:
-                    self.error(f'Got HTTP {rsp.status} when downloading segment {seg.uri} from {url}')
+                    self.error(f'Got HTTP {rsp.status_code} when downloading segment {seg.uri} from {url}')
                     return
             if isinstance(seg, Segment):
                 if seg.crc32 and seg.crc32 != calc_crc32_digest(data):
@@ -362,8 +474,9 @@ class HlsDownloader(Logging):
                     self.download_with_retry(media_seq))
 
     def pop_segment(self, media_seq: int):
-        self.playlist_group.min_seq = media_seq
+        self.playlist_group.min_seq = max(media_seq, self.playlist_group.min_seq or media_seq)
         self.playlist_group.segments.pop(media_seq, None)
+        self._download_futures.pop(media_seq, None)
         return self.segment_data.pop(media_seq)
 
     @log_exception_async
@@ -374,6 +487,7 @@ class HlsDownloader(Logging):
             if to_write:
                 await self.write_queue.put(b''.join(to_write))
             to_write.clear()
+        self.debug(f'currently cached {len(self.segment_data)} segments')
         if len(self.segment_data) > CACHE_SEG_LIMIT or clear_cache:
             for i, media_seq in enumerate(sorted(self.segment_data)):
                 last_sequence = getattr(self.last_segment, 'media_sequence', None) or media_seq
@@ -386,6 +500,8 @@ class HlsDownloader(Logging):
                         if len(self.segment_data) < CACHE_SEG_WAIT_LIMIT or i > 0:
                             break
                     self.warning(f'Missing segments ({self.last_segment.media_sequence}, {media_seq - 1}]')
+                elif self.last_segment is None and len(self.segment_data) < CACHE_SEG_WAIT_LIMIT:
+                    break
                 data, seg = self.pop_segment(media_seq)
                 self.debug(f'To write segment {seg.uri}')
                 to_write.append(data)
@@ -426,12 +542,12 @@ class HlsDownloader(Logging):
 
 
 class PlaylistGroup(Logging):
-    def __init__(self, session: aiohttp.ClientSession, pool: PlaylistPool):
+    def __init__(self, session: httpx.AsyncClient, pool: PlaylistPool):
         self._session = session
         self.pool = pool
         self.logger = get_logger('Group', pool.room_id)
 
-        self.playlists: dict[str, "Playlist"] = {}
+        self._playlists: dict[str, list["Playlist"]] = {}
         self.running = False
 
         self.segments: dict[int, dict[tuple, tuple[Segment, Playurl]]] = {}
@@ -439,31 +555,52 @@ class PlaylistGroup(Logging):
         self.last_update = 0
         self.downloader: Optional[HlsDownloader] = None
 
+    def stats(self) -> dict[str, int]:
+        if self.downloader:
+            return {
+                'cached_segs': len(self.downloader.segment_data),
+                'cached_inits': len(self.downloader.init_sections),
+                'queued_chunks': self.downloader.write_queue.qsize(),
+            }
+        return {}
+
+    async def join(self):
+        while self.playlists:
+            for playlist in self.playlists:
+                await playlist.join()
+
     def start(self):
         self.running = True
-        self.downloader = HlsDownloader(self._session, self)
-        for playlist in self.playlists.values():
+        if not self.downloader:
+            self.downloader = HlsDownloader(self._session, self)
+        for playlist in self.playlists:
             playlist.enabled = True
 
     def close(self):
+        self.running = False
         if self.downloader:
             self.downloader.close()
-        for playlist in self.playlists.values():
+            self.downloader = None
+        for playlist in self.playlists:
             playlist.close()
+
+    @property
+    def playlists(self):
+        return [playlist for lists in self._playlists.values() for playlist in lists]
 
     @property
     def basedir(self):
         if self.playlists:
-            return get_dict_value(self.playlists).playurl.basedir
+            return self.playlists[0].playurl.basedir
 
     @property
     def is_valid(self):
-        return any([playlist.is_valid for playlist in self.playlists.values()])
+        return any([playlist.is_valid for playlist in self.playlists])
 
     @property
     def expire_ts(self):
         expire_ts = 0
-        for playlist in self.playlists.values():
+        for playlist in self.playlists:
             if playlist.expire_ts is None:
                 return None
             else:
@@ -476,9 +613,12 @@ class PlaylistGroup(Logging):
             return self.expire_ts - time.time() < 120
 
     def check_playlists(self):
-        for key, playlist in list(self.playlists.items()):
-            if not playlist.is_valid:
-                self.playlists.pop(key)
+        for key, playlists in list(self._playlists.items()):
+            playlists = [p for p in playlists if p.is_valid]
+            if not playlists:
+                self._playlists.pop(key)
+            else:
+                self._playlists[key] = playlists
 
     @log_exception_async
     def add_playlist(self, playlist: "Playlist"):
@@ -486,17 +626,22 @@ class PlaylistGroup(Logging):
             self.load_segments(playlist)
             playlist.group = self
             playlist.enabled = self.running
-            self.playlists[playlist.playurl.host] = playlist
+            self._playlists[playlist.playurl.host] = [playlist]
             self.info(f'Adding playlist {playlist.url} to group {self.basedir}')
             return True
         elif self.check_compatible(playlist):
             playlist.group = self
             playlist.enabled = self.running
-            if playlist.playurl.host in self.playlists:
-                self.info(f'Closing dup playlist {playlist.url} from group {self.basedir}')
-                self.playlists[playlist.playurl.host].close()
-            self.playlists[playlist.playurl.host] = playlist
+            if playlist.playurl.host not in self._playlists:
+                self._playlists[playlist.playurl.host] = []
+            self._playlists[playlist.playurl.host].append(playlist)
             self.info(f'Adding playlist {playlist.url} to group {self.basedir}')
+            list_num_to_keep = 1 if len(self._playlists) > 1 else 3
+            for key, lists in self._playlists.items():
+                for playlist in lists[:-list_num_to_keep]:
+                    self.info(f'Closing dup playlist {playlist.url} from group {self.basedir}')
+                    playlist.close()
+                self._playlists[key] = lists[-list_num_to_keep:]
             return True
         return False
 
@@ -538,7 +683,7 @@ class PlaylistGroup(Logging):
 
 
 class Playlist(Logging):
-    def __init__(self, session: aiohttp.ClientSession, playurl: Playurl, pool: PlaylistPool):
+    def __init__(self, session: httpx.AsyncClient, playurl: Playurl, pool: PlaylistPool):
         self._session = session
         self.playurl = playurl
         self.logger = get_logger('Playlist', pool.room_id)
@@ -563,6 +708,16 @@ class Playlist(Logging):
         self.info(f'Closing playlist {self.url}')
         self._is_valid = False
         self._reload_future.cancel()
+
+    async def join(self):
+        while self.is_valid:
+            try:
+                await self._reload_future
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                self.exception('error while reloading playlist')
+                return
 
     @property
     def is_valid(self):
@@ -619,14 +774,14 @@ class Playlist(Logging):
     async def _reload(self, retries=3):
         try:
             self.debug(f'reloading playlist {self.url}')
-            async with self._session.get(self.url) as rsp:
-                if rsp.status == 200:
-                    return await self.parse_m3u8(await rsp.text(encoding='utf-8'))
-                elif rsp.status >= 400:
-                    self.info(f'Got status {rsp.status} when reloading playlist from {self.url}')
+            async with self._session.stream('GET', self.url) as rsp:
+                if rsp.status_code == 200:
+                    return await self.parse_m3u8((await rsp.aread()).decode(encoding='utf-8'))
+                elif rsp.status_code >= 400:
+                    self.info(f'Got status {rsp.status_code} when reloading playlist from {self.url}')
                     self.is_valid = False
                 else:
-                    raise ValueError(f'Unexpected status {rsp.status} when reloading playlist')
+                    raise ValueError(f'Unexpected status {rsp.status_code} when reloading playlist')
         except asyncio.CancelledError:
             self.is_valid = False
         except Exception:
@@ -639,19 +794,20 @@ class Playlist(Logging):
     async def _load(self, retry_403=True, retry_exception=True):
         try:
             self.debug(f'loading playlist {self.url}')
-            async with self._session.get(self.url) as rsp:
-                if rsp.status == 200:
+            async with self._session.stream('GET', self.url) as rsp:
+                self.debug(f'loading playlist using {rsp.http_version} protocol')
+                if rsp.status_code == 200:
                     self.is_valid = True
                     self.load_result.set_result(True)
-                    return await self.parse_m3u8(await rsp.text(encoding='utf-8'))
-                elif rsp.status == 403 and retry_403 and self.playurl.query:
+                    return await self.parse_m3u8((await rsp.aread()).decode(encoding='utf-8'))
+                elif rsp.status_code == 403 and retry_403 and self.playurl.query:
                     self.url = self.playurl.full_url
                     self.expire_ts = self.playurl.expire_ts
                     return await self._load(retry_403=False)
                 else:
                     self.is_valid = False
                     self.load_result.set_result(False)
-                    self.warning(f'Failed to load playlist with status {rsp.status} from {self.url}')
+                    self.warning(f'Failed to load playlist with status {rsp.status_code} from {self.url}')
         except Exception:
             if retry_exception:
                 return await self._load(retry_exception=False, retry_403=retry_403)
@@ -681,25 +837,5 @@ class Playlist(Logging):
         return f'<Playlist url="{self.url}" valid={self.is_valid} enabled={self.enabled} group={self.group} pool={self.pool} >'
 
 
-from utils import AttrObj
-
-async def test2():
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-        async def _get_fmp4():
-            async with session.get('http://biliapi.imfurry.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=440&protocol=0,1&format=0,1,2&codec=0,1&qn=10000&platform=web&dolby=5&panorama=1') as rsp:
-                data = await rsp.json()
-            return AttrObj(data).data.playurl_info.playurl.stream.filter_one(lambda _, v: v.protocol_name == 'http_hls').format.filter_one(lambda _, v: v.format_name == 'fmp4').codec[0].value
-        fmp4_data = await _get_fmp4()
-        print(fmp4_data)
-        await asyncio.sleep(3)
-        pool = PlaylistPool(session, 395113)
-        await pool.add_from_format(fmp4_data)
-        await asyncio.sleep(60)
-        await pool.add_from_format(await _get_fmp4())
-        await asyncio.sleep(60)
-        pool.close()
-        await asyncio.sleep(3)
-
-
 if __name__ == '__main__':
-    asyncio.run(test2())
+    asyncio.run(run(int(sys.argv[1])))

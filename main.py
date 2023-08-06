@@ -5,12 +5,18 @@ import pathlib
 import asyncio
 import subprocess
 import logging
+import json
+import concurrent.futures
+import multiprocessing
 
 from config import config
 from rooms import Room
-from utils import _sessions
+from utils import close_sessions
 from hls_new import _file_handlers
 
+import tracemalloc
+import gc
+tracemalloc.start(25)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +77,7 @@ async def main():
     finally:
         logger.info('shutting down')
         await asyncio.gather(*[room.stop() for room in rooms.values()])
-        await asyncio.gather(*[session.close() for session in _sessions.values()])
+        await close_sessions()
 
 if __name__ == '__main__':
     logger.info('starting recorder')

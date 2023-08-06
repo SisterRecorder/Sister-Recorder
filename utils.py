@@ -5,17 +5,48 @@ import asyncio
 import logging
 from http.cookies import SimpleCookie
 import traceback
+import linecache
+import tracemalloc
+import gc
 
 import aiofile
 import aiohttp
 from aiohttp_socks import ProxyConnector
+import httpx
+
 
 logger = logging.getLogger(__name__)
 _sessions: dict[str, aiohttp.ClientSession] = {}
+_httpx_sessions: dict[str, httpx.AsyncClient] = {}
+
 
 T = TypeVar('T')
 
-HLS_CLIENT_TIMEOUT = 4
+HLS_CLIENT_TIMEOUT = 5
+
+
+def snapshot_ram_top(logger=logger, key_type='lineno', limit=10):
+    snapshot = tracemalloc.take_snapshot()
+    top_stats = snapshot.statistics(key_type)
+
+    lines = []
+    lines.append("Top %s lines" % limit)
+    for index, stat in enumerate(top_stats[:limit], 1):
+        frame = stat.traceback[0]
+        lines.append("#%s: %s:%s: %.1f KiB"
+              % (index, frame.filename, frame.lineno, stat.size / 1024))
+        line = linecache.getline(frame.filename, frame.lineno).strip()
+        if line:
+            lines.append('    %s' % line)
+
+    other = top_stats[limit:]
+    if other:
+        size = sum(stat.size for stat in other)
+        lines.append("%s other: %.1f KiB" % (len(other), size / 1024))
+    total = sum(stat.size for stat in top_stats)
+    lines.append("Total allocated size: %.1f KiB" % (total / 1024))
+    logger.debug('Malloc top\n%s\n' % "\n".join(lines))
+    gc.collect()
 
 
 def get_live_api_session(config):
@@ -43,9 +74,16 @@ def get_danmaku_session(config):
 
 
 def get_downloader_session(config):
-    if not _sessions.get('hls-dl'):
-        _sessions['hls-dl'] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HLS_CLIENT_TIMEOUT))
-    return _sessions['hls-dl']
+    if not _httpx_sessions.get('hls-dl'):
+        _httpx_sessions['hls-dl'] = httpx.AsyncClient(timeout=HLS_CLIENT_TIMEOUT, http2=config.http2_download)
+    return _httpx_sessions['hls-dl']
+
+
+async def close_sessions():
+    await asyncio.gather(
+        *[session.close() for session in _sessions.values()],
+        *[session.aclose() for session in _httpx_sessions.values()],
+    )
 
 
 def parse_cookies_string(cookie_str: str, domain: str):

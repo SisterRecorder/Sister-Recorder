@@ -6,13 +6,14 @@ import asyncio
 import traceback
 import logging
 import urllib.parse
+import multiprocessing
 
 from aiofile import async_open
 
 from blivedm.blivedm import BLiveClient, HandlerInterface
 from utils import get_live_api_session, get_danmaku_session, dump_stdout, AttrObj, Logging
 from config import config
-from hls_new import PlaylistPool
+import hls_new
 
 
 class DumpHandler(HandlerInterface):
@@ -71,18 +72,41 @@ class LiveStartHandler(HandlerInterface, Logging):
             self.room.check_live()
 
 
+class PersistBLiveClient(BLiveClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._persist = False
+        self._daemon = None
+
+    def start(self):
+        super().start()
+        self._persist = True
+        self._daemon = self._daemon or asyncio.create_task(self._persist_daemon())
+
+    async def _persist_daemon(self):
+        while self._persist:
+            if not self.is_running:
+                self.start()
+            await asyncio.sleep(5)
+
+    def stop(self):
+        super().stop()
+        self._persist = False
+        self._daemon = None
+
+
 class Room(Logging):
-    def __init__(self, room_id):
+    def __init__(self, room_id: int):
         self.logger = logging.getLogger(f'{__name__}.Room][{room_id}')
         self.room_id = int(room_id)
 
-        self.dm_client = BLiveClient(self.room_id, session=get_danmaku_session(config))
+        self.dm_client = PersistBLiveClient(self.room_id, session=get_danmaku_session(config))
         self.dump_handler = DumpHandler(self.room_id)
         self.dm_client.add_handler(self.dump_handler)
         self.dm_client.add_handler(LiveStartHandler(self))
 
         self._session = get_live_api_session(config)
-        self._native_dl_pool = PlaylistPool(self)
+        self._rec_process = None
 
         self.playurl_retry_interval = 5
         self.sleep_interval = 600
@@ -97,12 +121,6 @@ class Room(Logging):
         if match:
             return int(match[1])
 
-    @classmethod
-    def from_url(cls, url: str):
-        room_id = cls.get_room_id(url)
-        if room_id:
-            return cls(room_id)
-
     def start(self):
         self.debug('staring room')
         self._running = True
@@ -113,7 +131,8 @@ class Room(Logging):
         self.debug('stopping room')
         self._running = False
         self._playurl_future.cancel()
-        self._native_dl_pool.close()
+        if self._rec_process:
+            self._rec_process.terminate()
         self.debug('closing playurl future')
         await asyncio.shield(self._playurl_future)
         self.debug('closing dump handler')
@@ -185,13 +204,16 @@ class Room(Logging):
             self.warning(f'no {"fMp4" if config.only_fmp4 else "hls"} formats found')
             await self.sleep()
             return
-        self.debug(f'will use format: {hls_format}')
         if config.record_backend == 'native':
-            self.info('sending playurl to native downloader')
-            await self._native_dl_pool.add_from_format(hls_format.value)
-            self.debug('playurl sent to native downloader')
-            await self.sleep(min_sleep=10)
+            self.info('starting native recorder')
+            self._rec_process = multiprocessing.Process(target=hls_new.run_in_asyncio, args=(self.room_id,))
+            self._rec_process.start()
+            while self._rec_process.is_alive():
+                await asyncio.sleep(1)
+            self.info(f'record ended with exitcode {self._rec_process.exitcode}')
+            self._rec_process = None
         else:
+            self.debug(f'will use format: {hls_format}')
             m3u8_url = await self.extract_url(hls_format)
             self.debug(f'will use url {m3u8_url}')
 
@@ -273,7 +295,7 @@ class Room(Logging):
     async def _get_playurl_worker(self):
         while self._running:
             try:
-                rsp = await self._get_playurl_with_retry()
+                rsp = await self._get_playurl_with_retry(prefer_no_bs=(config.record_backend != 'native'))
                 if rsp.data.playurl_info:
                     self.debug('got playurl, starting record')
                     await self.record(rsp.data.playurl_info)

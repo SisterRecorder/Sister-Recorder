@@ -4,3 +4,4 @@ aiohttp==3.7.4
 Brotli==1.0.9
 pure-protobuf==3.0.0a5
 m3u8
+httpx[http2]
