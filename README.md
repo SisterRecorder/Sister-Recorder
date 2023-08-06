@@ -11,13 +11,11 @@ This project is intended as a proof-of-concept solution to evaluate reliability 
 
 ## 依赖
 
-Sister Recorder可通过调用外部的streamlink/ffmpeg实现录制，因而需要下载或安装相应的依赖软件
+Sister Recorder实现了一个HLS下载器，但也可通过调用外部的streamlink/ffmpeg实现录制，如需使用需要下载或安装相应的依赖软件
 - [streamlink](https://streamlink.github.io/install.html)
 - [ffmpeg](https://ffmpeg.org/download.html)
 
 Release中的压缩包已经打包了必须的依赖。如果使用Release中打包的版本，则无需额外下载依赖。
-
-ADD：脑死状态下写完了基于aiohttp client的HLS下载器（但只下载，不进行合并），可以修改相应配置项为native进行测试。(fMp4好像只要把文件按顺序拼在一起就行了？)
 
 ## 如何使用
 

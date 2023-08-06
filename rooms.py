@@ -12,7 +12,6 @@ from aiofile import async_open
 from blivedm.blivedm import BLiveClient, HandlerInterface
 from utils import get_live_api_session, get_danmaku_session, dump_stdout, AttrObj, Logging
 from config import config
-from hls_playlist_async import HlsDownloader
 from hls_new import PlaylistPool
 
 
@@ -150,6 +149,25 @@ class Room(Logging):
     def get_flv_stream(self, playurl_info: AttrObj):
         return playurl_info.playurl.stream.filter_one(lambda _, v: v.protocol_name == 'http_stream').format._first.codec._first
 
+    async def test_flv_stream(self, playurl_info: AttrObj):
+        flv_format = self.get_flv_stream(playurl_info)
+        if flv_format:
+            host = flv_format.url_info.filter_one(lambda _, v: 'mcdn.bilivideo.cn' not in v.host.value)
+            url = f'{host.host.value}{flv_format.base_url.value}{host.extra.value}'
+            headers = {
+                'referer': f'https://live.bilibili.com/{self.room_id}',
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36',
+            }
+            self.debug(f'test flv url {url}')
+            try:
+                async with self._session.get(url, headers=headers) as rsp:
+                    if rsp.status == 200:
+                        return True
+                    else:
+                        self.debug(f'Failed to probe flv stream with HTTP {rsp.status}')
+            except Exception as e:
+                self.debug(f'Failed to probe flv stream: {type(e)} {e}')
+
     def get_fmp4_stream(self, playurl_info: AttrObj, fallback=False):
         hls_formats = playurl_info.playurl.stream.filter_one(lambda _, v: v.protocol_name == 'http_hls').format
         format = hls_formats.filter_one(lambda _, v: v.format_name == 'fmp4').codec._first
@@ -158,7 +176,7 @@ class Room(Logging):
         return format
 
     async def record(self, playurl_info: AttrObj):
-        if config.only_if_no_flv and self.get_flv_stream(playurl_info):
+        if config.only_if_no_flv and (await self.test_flv_stream(playurl_info)):
             self.info('skip record because flv is found')
             await self.sleep()
             return
@@ -169,9 +187,9 @@ class Room(Logging):
             return
         self.debug(f'will use format: {hls_format}')
         if config.record_backend == 'native':
-            self.info('sending playurl to native recorder')
+            self.info('sending playurl to native downloader')
             await self._native_dl_pool.add_from_format(hls_format.value)
-            self.debug('playurl sent')
+            self.debug('playurl sent to native downloader')
             await self.sleep(min_sleep=10)
         else:
             m3u8_url = await self.extract_url(hls_format)

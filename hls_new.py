@@ -41,6 +41,7 @@ def get_handler(path: Optional[str] = None):
         return handler
     else:
         if path not in _file_handlers:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             _file_handlers[path] = logging.FileHandler(path, encoding='utf-8')
             _file_handlers[path].formatter = _file_formatter
             _file_handlers[path].setLevel(logging.DEBUG)
@@ -92,6 +93,8 @@ def log_exception_async(func: T) -> T:
         async def async_wrapper(self, *args, **kwargs):
             try:
                 return await func(self, *args, **kwargs)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 self.exception(f'error from {func}')
         return async_wrapper
