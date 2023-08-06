@@ -9,6 +9,8 @@ import logging
 from config import config
 from rooms import Room
 from utils import _sessions
+from hls_new import _file_handlers
+
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,7 @@ if config.record_backend == 'ffmpeg':
 
 
 async def main():
-    rooms: dict[str, Room] = {}
+    rooms: dict[int, Room] = {}
     logger.info('start loading rooms')
     try:
         while True:
@@ -50,15 +52,17 @@ async def main():
                     urls = []
                 if not urls:
                     logger.warn('Please put livestream room urls in `urls.txt`')
-                    await asyncio.sleep(30)
                 else:
-                    for url in urls:
-                        room_id = Room.get_room_id(url)
-                        if room_id and room_id not in rooms:
+                    room_ids = {Room.get_room_id(url) for url in urls}
+                    for room_id in room_ids - set(rooms):
+                        if room_id:
                             logger.info(f'adding new room {room_id}')
                             rooms[room_id] = Room(room_id)
                             rooms[room_id].start()
-                    await asyncio.sleep(30)
+                            await asyncio.sleep(1)
+                    for room_id in set(rooms) - room_ids:
+                        await rooms.pop(room_id).stop()
+                await asyncio.sleep(30)
             except (KeyboardInterrupt, SystemExit):
                 break
             except Exception:
@@ -74,4 +78,6 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     finally:
+        for handler in _file_handlers.values():
+            handler.close()
         logging.shutdown()

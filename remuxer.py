@@ -104,4 +104,5 @@ class FMp4Remuxer(RemuxerInterface, Logging):
                         n_bytes = await out_f.write(await seg_f.read())
                         self.debug(f'writting {n_bytes}bytes from segment '
                                    f'{os.path.basename(seg_fn)} to {self.out_fn}, total {out_f.tell()}')
+                    os.remove(seg_fn)
         self.info(f'remux to {self.out_fn} ended')

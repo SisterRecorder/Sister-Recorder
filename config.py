@@ -58,7 +58,7 @@ class Config:
         section = 'global'
         self.loglevel = _load_choices(
             'loglevel', ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], transform=lambda i: i.upper())
-        self.logfile = _load('logfile') or f'log/sisrec-{date.today().strftime("%y%m%d")}-.log'
+        self.logfile = _load('logfile') or f'log/sisrec-{date.today().strftime("%y%m%d")}.log'
         self.record_backend = _load_choices('record_backend', ['streamlink', 'native', 'ffmpeg'])
         self.output_ext = _load_choices('output_ext', ['ts', 'mp4'])
         self.ffmpeg_loglevel = _load_choices('ffmpeg_loglevel', [

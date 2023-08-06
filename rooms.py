@@ -13,6 +13,7 @@ from blivedm.blivedm import BLiveClient, HandlerInterface
 from utils import get_live_api_session, get_danmaku_session, dump_stdout, AttrObj, Logging
 from config import config
 from hls_playlist_async import HlsDownloader
+from hls_new import PlaylistPool
 
 
 class DumpHandler(HandlerInterface):
@@ -76,12 +77,13 @@ class Room(Logging):
         self.logger = logging.getLogger(f'{__name__}.Room][{room_id}')
         self.room_id = int(room_id)
 
-        self.dm_client = BLiveClient(room_id, session=get_danmaku_session(config))
-        self.dump_handler = DumpHandler(room_id)
+        self.dm_client = BLiveClient(self.room_id, session=get_danmaku_session(config))
+        self.dump_handler = DumpHandler(self.room_id)
         self.dm_client.add_handler(self.dump_handler)
         self.dm_client.add_handler(LiveStartHandler(self))
 
         self._session = get_live_api_session(config)
+        self._native_dl_pool = PlaylistPool(self.room_id)
 
         self.playurl_retry_interval = 5
         self.sleep_interval = 600
@@ -94,7 +96,7 @@ class Room(Logging):
     def get_room_id(cls, url: str):
         match = re.search(r'(?:^|https?://live\.bilibili\.com/(?:(?:blanc|h5)/)?)(\d+)', url)
         if match:
-            return match[1]
+            return int(match[1])
 
     @classmethod
     def from_url(cls, url: str):
@@ -112,6 +114,7 @@ class Room(Logging):
         self.debug('stopping room')
         self._running = False
         self._playurl_future.cancel()
+        self._native_dl_pool.close()
         self.debug('closing playurl future')
         await asyncio.shield(self._playurl_future)
         self.debug('closing dump handler')
@@ -163,14 +166,10 @@ class Room(Logging):
         hls_format = fmp4_format or hls_formats.format._first.codec._first
         self.debug(f'will use format: {hls_format}')
         if config.record_backend == 'native':
-            self.info(f'starting record using {config.record_backend}')
-            try:
-                downloader = HlsDownloader(self.room_id)
-                downloader.load_hls_format(hls_format)
-                await downloader.join()
-            finally:
-                downloader.close()
-            self.info('record ended')
+            self.info('sending playurl to native recorder')
+            await self._native_dl_pool.add_from_format(hls_format.value)
+            self.debug('playurl sent')
+            await self.sleep()
         else:
             m3u8_url = await self.extract_url(hls_format)
             self.debug(f'will use url {m3u8_url}')
@@ -228,7 +227,8 @@ class Room(Logging):
                 'platform': 'web',
                 'dolby': 5,
                 'panorama': 1,
-            }
+            },
+            ssl=(config.live_api_host.startswith('https://api.live.bilibili.com'))
         ) as res:
             return AttrObj(await res.json())
 
@@ -245,6 +245,8 @@ class Room(Logging):
                     await self.sleep()
             except asyncio.CancelledError:
                 break
+            except asyncio.TimeoutError:
+                pass
             except Exception:
                 self.exception('exception in playurl loop')
                 await asyncio.sleep(30)

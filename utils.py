@@ -1,4 +1,4 @@
-from typing import Callable, Any
+from typing import Callable, Any, TypeVar
 import re
 import os
 import asyncio
@@ -13,7 +13,9 @@ from aiohttp_socks import ProxyConnector
 logger = logging.getLogger(__name__)
 _sessions: dict[str, aiohttp.ClientSession] = {}
 
-HLS_CLIENT_TIMEOUT = 5
+T = TypeVar('T')
+
+HLS_CLIENT_TIMEOUT = 4
 
 
 def get_live_api_session(config):
@@ -68,6 +70,16 @@ def get_searcher(pattern, flags=0, group=1, transform=None):
     return searcher
 
 
+def re_search_group(pattern, string, group=1, transform=None, **kwargs):
+    m = re.search(pattern, string)
+    if m:
+        value = m.group(group)
+        if transform:
+            return transform(value)
+        else:
+            return value
+
+
 async def dump_data(data, fn: str, mode='wb') -> int:
     try:
         async with aiofile.async_open(fn, mode) as afp:
@@ -96,6 +108,10 @@ async def dump_stdout(proc: asyncio.subprocess.Process, fn: str, mode='ab', time
         traceback.print_exc()
 
 
+def get_dict_value(d: dict[Any, T], index=0) -> T:
+    return list(d.values())[index]
+
+
 class AttrObj:
     def __init__(self, obj):
         self.__obj = obj
@@ -108,7 +124,7 @@ class AttrObj:
         def _filter(iterator):
             return AttrObj([v for k, v in iterator if func(k, AttrObj(v))])
         if isinstance(self.__obj, dict):
-            return _filter(self.__obj.items)
+            return _filter(self.__obj.items())
         elif isinstance(self.__obj, list):
             return _filter(enumerate(self.__obj))
         return AttrObj(None)
@@ -121,8 +137,6 @@ class AttrObj:
             value = self.__obj.get(name)
         else:
             value = None
-        if value is None and name.startswith('__') and name.endswith('__'):
-            raise AttributeError
         return AttrObj(value)
 
     def __getitem__(self, index):

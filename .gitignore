@@ -1,6 +1,7 @@
 __pycache__/
 build/
 dist/
+target/
 
 streamlink/
 
@@ -12,6 +13,7 @@ streamlink/
 *.mp4
 *.m4s
 *.m3u8
+*.fmp4
 
 urls.txt
 config.ini
