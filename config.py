@@ -69,7 +69,7 @@ class Config:
         self.live_api_cookie_string = _load('live_api_cookie_string')
         self.only_if_no_flv = _load('only_if_no_flv', getter='getboolean')
         self.only_fmp4 = _load('only_fmp4', getter='getboolean')
-        self.http2_download = _load('http2_download', getter='getboolean')
+        self.http2_download = _load('http2_download', getter='getboolean', default=False)
 
 
 config = Config()
@@ -90,4 +90,5 @@ for args, kwargs in _log_queue:
     logger.log(*args, **kwargs)
 
 logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('hpack').setLevel(logging.WARNING)
 logging.getLogger('httpcore').setLevel(logging.INFO)

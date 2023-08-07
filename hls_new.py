@@ -399,7 +399,7 @@ class HlsDownloader(Logging):
                     self.error(f'Crc32 checksum failed for segment {seg.uri} from {url}')
             return data
         except httpx.TransportError:
-            self.warning(f'Failed to donwload segment {seg.uri} from {url}: {traceback.format_exc(limit=0).strip()}')
+            self.warning(f'Failed to donwload segment {seg.uri} from {url}: {traceback.format_exc(limit=0, chain=False).strip()}')
         except Exception:
             self.exception(f'Failed to donwload segment {seg.uri} from {url}')
 
