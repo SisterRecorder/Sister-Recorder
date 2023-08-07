@@ -122,7 +122,7 @@ class RoomInterface(Protocol):
 class RoomLinkChecker(Logging):
     def __init__(self, room_id: int):
         self.room_id = room_id
-        self._session = get_live_api_session(config)
+        self._session = get_live_api_session(config, name=f'live-api-{room_id}')
         self.logger = get_logger('link_checker', room_id)
         self.pool: Optional[PlaylistPool] = None
         self.last_check = 0
@@ -235,7 +235,7 @@ class PlaylistPool(Logging):
         while True:
             try:
                 self.log_stats()
-                await asyncio.sleep(30)
+                await asyncio.sleep(900)
             except asyncio.CancelledError:
                 break
 
@@ -398,7 +398,7 @@ class HlsDownloader(Logging):
                 if seg.crc32 and seg.crc32 != calc_crc32_digest(data):
                     self.error(f'Crc32 checksum failed for segment {seg.uri} from {url}')
             return data
-        except (asyncio.TimeoutError, aiohttp.ClientError):
+        except httpx.TransportError:
             self.warning(f'Failed to donwload segment {seg.uri} from {url}: {traceback.format_exc(limit=0).strip()}')
         except Exception:
             self.exception(f'Failed to donwload segment {seg.uri} from {url}')

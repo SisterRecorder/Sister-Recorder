@@ -49,8 +49,8 @@ def snapshot_ram_top(logger=logger, key_type='lineno', limit=10):
     gc.collect()
 
 
-def get_live_api_session(config):
-    if not _sessions.get('live_api'):
+def get_live_api_session(config, name='live_api'):
+    if not _sessions.get(name):
         aiohttp_config = {
             'timeout': aiohttp.ClientTimeout(total=10),
         }
@@ -63,8 +63,8 @@ def get_live_api_session(config):
             aiohttp_config['cookie_jar'] = aiohttp.CookieJar()
             aiohttp_config['cookie_jar'].update_cookies(parse_cookies_string(
                 config.live_api_cookie_string, '.bilibili.com'))
-        _sessions['live_api'] = aiohttp.ClientSession(**aiohttp_config)
-    return _sessions['live_api']
+        _sessions[name] = aiohttp.ClientSession(**aiohttp_config)
+    return _sessions[name]
 
 
 def get_danmaku_session(config):
