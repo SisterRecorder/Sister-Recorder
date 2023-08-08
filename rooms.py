@@ -206,11 +206,16 @@ class Room(Logging):
             return
         if config.record_backend == 'native':
             self.info('starting native recorder')
-            self._rec_process = multiprocessing.Process(target=hls_new.run_in_asyncio, args=(self.room_id,))
-            self._rec_process.start()
-            while self._rec_process.is_alive():
-                await asyncio.sleep(1)
-            self.info(f'record ended with exitcode {self._rec_process.exitcode}')
+            # self._rec_process = multiprocessing.Process(target=hls_new.run_in_asyncio, args=(self.room_id,))
+            # self._rec_process.start()
+            # while self._rec_process.is_alive():
+            #     await asyncio.sleep(1)
+            proc = await asyncio.create_subprocess_exec(
+                'python', 'hls_new.py', f'{self.room_id}',
+            )
+            await proc.wait()
+            # self.info(f'record ended with exitcode {self._rec_process.exitcode}')
+            self.info(f'record ended with exitcode {proc.returncode}')
             self._rec_process = None
         else:
             self.debug(f'will use format: {hls_format}')

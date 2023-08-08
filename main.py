@@ -5,9 +5,6 @@ import pathlib
 import asyncio
 import subprocess
 import logging
-import json
-import concurrent.futures
-import multiprocessing
 
 from config import config
 from rooms import Room
@@ -15,7 +12,6 @@ from utils import close_sessions
 from hls_new import _file_handlers
 
 import tracemalloc
-import gc
 tracemalloc.start(25)
 
 logger = logging.getLogger(__name__)
