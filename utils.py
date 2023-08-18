@@ -73,15 +73,15 @@ def get_danmaku_session(config):
     return _sessions['chat_ws']
 
 
-def get_downloader_session(config):
+def get_downloader_session(config, name='hls-dl'):
     if config.http2_download:
-        if not _httpx_sessions.get('hls-dl'):
-            _httpx_sessions['hls-dl'] = httpx.AsyncClient(timeout=HLS_CLIENT_TIMEOUT, http2=True)
-        return _httpx_sessions['hls-dl']
+        if not _httpx_sessions.get(name):
+            _httpx_sessions[name] = httpx.AsyncClient(timeout=HLS_CLIENT_TIMEOUT, http2=True)
+        return _httpx_sessions[name]
     else:
-        if not _sessions.get('hls-dl'):
-            _sessions['hls-dl'] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HLS_CLIENT_TIMEOUT))
-        return _sessions['hls-dl']
+        if not _sessions.get(name):
+            _sessions[name] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HLS_CLIENT_TIMEOUT))
+        return _sessions[name]
 
 
 async def close_sessions():

@@ -10,6 +10,7 @@ import traceback
 import urllib.parse
 import sys
 import signal
+import threading
 from typing import Optional, Union, TypeVar, Protocol
 
 import m3u8
@@ -181,7 +182,8 @@ async def run(room_id):
     checker = RoomLinkChecker(room_id)
     pool = PlaylistPool(checker)
     checker.pool = pool
-    signal.signal(signal.SIGTERM, lambda sig, frame: pool.close())
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, lambda sig, frame: pool.close())
     try:
         await checker._check_live()
         await pool.join()
@@ -225,7 +227,7 @@ class Playurl:
             if 'mcdn.bilivideo.cn' in host_info['host']:
                 continue
             group.append(Playurl(host_info['host'], format_data['base_url'], host_info['extra'], group))
-            new_baseurl = re.sub(r'(/live_\d+(?:_bs)?_\d+)(?:_\w+)([/\.])', r'\1\2', format_data['base_url'])
+            new_baseurl = re.sub(r'(/live_\d+(?:_bs)?_\d+(?:_[a-f0-9]{8})?)(?:_[A-Za-z0-9]+)([/\.])', r'\1\2', format_data['base_url'])
             if new_baseurl != format_data['base_url']:
                 group.append(Playurl(host_info['host'], new_baseurl, '', group))
         return group
@@ -270,7 +272,7 @@ class WrapRequest:
 
 class PlaylistPool(Logging):
     def __init__(self, room: RoomInterface, session: Optional[Union[aiohttp.ClientSession, httpx.AsyncClient]] = None):
-        self._session = session or get_downloader_session(config)
+        self._session = session or get_downloader_session(config, name=f'hls-dl-{room.room_id}')
         self.room = room
         self.room_id = room.room_id
         self.logger = get_logger('Pool', self.room_id)
@@ -335,7 +337,7 @@ class PlaylistPool(Logging):
             def __get_score():
                 if not group:
                     return -10000
-                m = re.search(r'^live_\d+(_bs)?_\d+(_\w+)?$', group.basedir)
+                m = re.search(r'^live_\d+(_bs)?_\d+(_(?:[A-Za-z]+|\d+))?$', group.basedir)
                 if m:
                     bs, quality = m.groups()
                     if not quality:
@@ -428,8 +430,10 @@ class HlsDownloader(Logging, WrapRequest):
 
         self.download_segs()
         self._dumper_future = asyncio.create_task(self.dump_worker())
+        self._remux_proc = None
 
     def close(self):
+        print('closing downloader')
         self.running = False
         for future in self._download_futures.values():
             try:
@@ -437,6 +441,14 @@ class HlsDownloader(Logging, WrapRequest):
             except Exception:
                 pass
         asyncio.ensure_future(self.check_for_write(clear_cache=True))
+        if self._remux_proc:
+            self._remux_proc.stdin.close()
+            self._remux_proc.terminate()
+            
+    async def join(self):
+        if self._remux_proc:
+            await self._remux_proc.wait()
+        await self._dumper_future
 
     @log_exception_async
     async def download_and_verify(self, seg: Union[Segment, InitializationSection],
@@ -584,23 +596,39 @@ class HlsDownloader(Logging, WrapRequest):
     @log_exception_async
     async def dump_worker(self):
         while self.running:
-            out_fn = os.path.join(
+            out_prefix = os.path.join(
                 BASEDIR,
                 f'{self.out_prefix or self.playlist_group.pool.room_id}'
                 f'-{time.strftime("%y%m%d-%H%M%S")}'
-                f'-{self.playlist_group.basedir}.fmp4'
+                f'-{self.playlist_group.basedir}'
             )
+            out_fn = f'{out_prefix}.fmp4'
+            # self._remux_proc = await asyncio.create_subprocess_exec(
+                # 'ffmpeg', '-y', '-hide_banner', '-nostats',
+                # '-i', '-',
+                # '-c', 'copy',
+                # f'{out_prefix}.mp4',
+                # stdin=asyncio.subprocess.PIPE,
+                # # stdout=asyncio.subprocess.DEVNULL,
+                # # stderr=asyncio.subprocess.DEVNULL,
+            # )
             self.info(f'begin writing to new file {out_fn}')
             os.makedirs(os.path.dirname(out_fn), exist_ok=True)
             async with aiofile.async_open(out_fn, 'wb') as f:
                 while True:
                     data = await self.write_queue.get()
                     if data:
+                        # self._remux_proc.stdin.write(data)
                         n_bytes = await f.write(data) if not DUMMY_WRITE else len(data)
                         self.debug(f'Wrote {n_bytes} bytes to file {out_fn}')
                     else:
                         break
+            # self._remux_proc.stdin.close()
             self.info(f'closing file {out_fn}')
+            # await self._remux_proc.wait()
+            # if self._remux_proc.returncode == 0:
+                # os.remove(out_fn)
+            self._remux_proc = None
         self.info('writing ended')
 
 
@@ -632,6 +660,8 @@ class PlaylistGroup(Logging):
             for playlist in self.playlists:
                 await playlist.join()
             self.check_playlists()
+        if self.downloader:
+            await self.downloader.join()
 
     def start(self):
         self.running = True
@@ -644,7 +674,6 @@ class PlaylistGroup(Logging):
         self.running = False
         if self.downloader:
             self.downloader.close()
-            self.downloader = None
         for playlist in self.playlists:
             playlist.close()
 
@@ -918,4 +947,9 @@ class Playlist(Logging, WrapRequest):
 
 
 if __name__ == '__main__':
-    run_in_asyncio(int(sys.argv[1]))
+    async def _wrap():
+        try:
+            await run(int(sys.argv[1]))
+        except KeyboardInterrupt:
+            await asyncio.sleep(3)
+    asyncio.run(_wrap())

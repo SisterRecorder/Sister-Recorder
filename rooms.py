@@ -202,7 +202,7 @@ class Room(Logging):
         hls_format = self.get_fmp4_stream(playurl_info, fallback=(not config.only_fmp4))
         if not hls_format:
             self.warning(f'no {"fMp4" if config.only_fmp4 else "hls"} formats found')
-            await self.sleep()
+            await asyncio.sleep(30)
             return
         if config.record_backend == 'native':
             self.info('starting native recorder')
@@ -210,11 +210,12 @@ class Room(Logging):
             # self._rec_process.start()
             # while self._rec_process.is_alive():
             #     await asyncio.sleep(1)
+            # self.info(f'record ended with exitcode {self._rec_process.exitcode}')
+
             proc = await asyncio.create_subprocess_exec(
                 'python', 'hls_new.py', f'{self.room_id}',
             )
             await proc.wait()
-            # self.info(f'record ended with exitcode {self._rec_process.exitcode}')
             self.info(f'record ended with exitcode {proc.returncode}')
             self._rec_process = None
         else:
