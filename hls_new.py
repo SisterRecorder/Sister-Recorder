@@ -21,6 +21,7 @@ import httpx
 
 from config import config
 from utils import re_search_group, get_dict_value, get_downloader_session, get_live_api_session, Logging, AttrObj, snapshot_ram_top
+from h3_client import H3Client
 
 
 DOWNLOAD_RETRY_INTERVAL = 3
@@ -233,9 +234,12 @@ class Playurl:
         return group
 
 
+DlClient = Union[aiohttp.ClientSession, httpx.AsyncClient, H3Client]
+
+
 class ClientProtocol(Protocol):
     @property
-    def _session(self) -> Union[aiohttp.ClientSession, httpx.AsyncClient]:
+    def _session(self) -> DlClient:
         raise NotImplementedError
 
 
@@ -260,6 +264,8 @@ class WrapRequest:
     def _request_stream(self: ClientProtocol, *args, **kwargs):
         if isinstance(self._session, aiohttp.ClientSession):
             return self._session.request
+        elif isinstance(self._session, H3Client):
+            return self._session.stream
         else:
             return self._session.stream
 
@@ -271,7 +277,7 @@ class WrapRequest:
 
 
 class PlaylistPool(Logging):
-    def __init__(self, room: RoomInterface, session: Optional[Union[aiohttp.ClientSession, httpx.AsyncClient]] = None):
+    def __init__(self, room: RoomInterface, session: Optional[DlClient] = None):
         self._session = session or get_downloader_session(config, name=f'hls-dl-{room.room_id}')
         self.room = room
         self.room_id = room.room_id
@@ -414,7 +420,7 @@ class PlaylistPool(Logging):
 
 
 class HlsDownloader(Logging, WrapRequest):
-    def __init__(self, session: Union[aiohttp.ClientSession, httpx.AsyncClient], playlist_group: "PlaylistGroup"):
+    def __init__(self, session: DlClient, playlist_group: "PlaylistGroup"):
         self._session = session
         self.logger = get_logger('HlsDL', playlist_group.pool.room_id)
         self.playlist_group = playlist_group
@@ -444,7 +450,7 @@ class HlsDownloader(Logging, WrapRequest):
         if self._remux_proc:
             self._remux_proc.stdin.close()
             self._remux_proc.terminate()
-            
+
     async def join(self):
         if self._remux_proc:
             await self._remux_proc.wait()
@@ -633,7 +639,7 @@ class HlsDownloader(Logging, WrapRequest):
 
 
 class PlaylistGroup(Logging):
-    def __init__(self, session: Union[aiohttp.ClientSession, httpx.AsyncClient], pool: PlaylistPool):
+    def __init__(self, session: DlClient, pool: PlaylistPool):
         self._session = session
         self.pool = pool
         self.logger = get_logger('Group', pool.room_id)
@@ -781,7 +787,7 @@ class PlaylistGroup(Logging):
 
 
 class Playlist(Logging, WrapRequest):
-    def __init__(self, session: Union[aiohttp.ClientSession, httpx.AsyncClient], playurl: Playurl, pool: PlaylistPool):
+    def __init__(self, session: DlClient, playurl: Playurl, pool: PlaylistPool):
         self._session = session
         self.playurl = playurl
         self.logger = get_logger('Playlist', pool.room_id)

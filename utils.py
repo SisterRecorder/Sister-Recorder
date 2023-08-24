@@ -14,10 +14,13 @@ import aiohttp
 from aiohttp_socks import ProxyConnector
 import httpx
 
+from h3_client import H3Client
+
 
 logger = logging.getLogger(__name__)
 _sessions: dict[str, aiohttp.ClientSession] = {}
 _httpx_sessions: dict[str, httpx.AsyncClient] = {}
+_h3_sessions: dict[str, H3Client] = {}
 
 
 T = TypeVar('T')
@@ -74,7 +77,11 @@ def get_danmaku_session(config):
 
 
 def get_downloader_session(config, name='hls-dl'):
-    if config.http2_download:
+    if config.http3_download:
+        if not _h3_sessions.get(name):
+            _h3_sessions[name] = H3Client(timeout=HLS_CLIENT_TIMEOUT)
+        return _h3_sessions[name]
+    elif config.http2_download:
         if not _httpx_sessions.get(name):
             _httpx_sessions[name] = httpx.AsyncClient(timeout=HLS_CLIENT_TIMEOUT, http2=True)
         return _httpx_sessions[name]
