@@ -1,6 +1,6 @@
 # Sister-Recorder
 
-Sister Recorder是一个只录制B站HLS直播流的录播软件，可以用作当下的备选方案之一
+Sister Recorder是一个只录制B站HLS直播流的录播软件
 
 Sister Recorder is an alternative bilibili livestream recorder that aim to record and only record HLS streams.
 
